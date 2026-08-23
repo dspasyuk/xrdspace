@@ -1,0 +1,26 @@
+{
+  "name": "xrdspace",
+  "version": "1.0.0",
+  "type": "module",
+  "description": "XPREP-style space-group determination and reflection merging for X-ray diffraction HKL data (JavaScript)",
+  "main": "src/index.js",
+  "bin": {
+    "xrdspace": "src/xrdspace.js"
+  },
+  "scripts": {
+    "test": "node tests/xrdspace-cod.js"
+  },
+  "keywords": [
+    "crystallography",
+    "space-group",
+    "xrd",
+    "xds",
+    "shelx",
+    "hkl",
+    "diffraction",
+    "pointless",
+    "xprep"
+  ],
+  "author": "Denis Spasyuk",
+  "license": "MIT"
+}
