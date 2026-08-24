@@ -305,6 +305,7 @@ Latest full run (see `tests/xrdspace-report.json` and the chart
 determined exactly or present among the zero-violation candidates. The
 remaining failures are genuine pseudo-symmetry and sparse-data ambiguities
 (the test exits non-zero only if the rate drops below 90 %).
+
 <img width="900" height="420" alt="xrdspace-report" src="https://github.com/user-attachments/assets/21c1fe8b-f30b-45de-a911-ccc488b7b20b" />
 
 ---
