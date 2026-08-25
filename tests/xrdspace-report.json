@@ -1,10 +1,10 @@
 {
   "total": 2000,
   "pass": 877,
-  "near": 1041,
-  "fail": 44,
+  "near": 1039,
+  "fail": 46,
   "skip": 38,
-  "rate": 97.8,
+  "rate": 97.7,
   "bySystem": {
     "triclinic": {
       "total": 40,
@@ -51,8 +51,8 @@
     "cubic": {
       "total": 200,
       "pass": 111,
-      "near": 77,
-      "fail": 10,
+      "near": 75,
+      "fail": 12,
       "skip": 2
     }
   }

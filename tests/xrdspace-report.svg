@@ -60,10 +60,10 @@
 <text x="721.8" y="381" text-anchor="middle" font-size="11" fill="#888">n=186</text>
 <rect x="777.5" y="294.9" width="24.5" height="55.1" fill="#2e9e4f" rx="2"/>
 <text x="789.8" y="290.9" text-anchor="middle" font-size="11" fill="#333" font-weight="bold">111</text>
-<rect x="804.0" y="311.8" width="24.5" height="38.2" fill="#e0a800" rx="2"/>
-<text x="816.3" y="307.8" text-anchor="middle" font-size="11" fill="#333" font-weight="bold">77</text>
-<rect x="830.5" y="345.0" width="24.5" height="5.0" fill="#d64545" rx="2"/>
-<text x="842.8" y="341.0" text-anchor="middle" font-size="11" fill="#333" font-weight="bold">10</text>
+<rect x="804.0" y="312.8" width="24.5" height="37.2" fill="#e0a800" rx="2"/>
+<text x="816.3" y="308.8" text-anchor="middle" font-size="11" fill="#333" font-weight="bold">75</text>
+<rect x="830.5" y="344.0" width="24.5" height="6.0" fill="#d64545" rx="2"/>
+<text x="842.8" y="340.0" text-anchor="middle" font-size="11" fill="#333" font-weight="bold">12</text>
 <text x="833.2" y="366" text-anchor="middle" font-size="12" fill="#333">Cubic</text>
 <text x="833.2" y="381" text-anchor="middle" font-size="11" fill="#888">n=200</text>
 <rect x="360" y="388" width="14" height="14" fill="#2e9e4f" rx="2"/>

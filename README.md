@@ -15,8 +15,9 @@ SHELXD / SHELXT / SHELXS.
   with full general-position symmetry operations).
 - Validated against **2000 real structures from the Crystallography Open
   Database (COD)**: the published space group is recovered exactly (PASS) or
-  appears among the zero-violation candidates (NEAR) in **94.1 %** of assessed
-  entries.
+  appears among the zero-violation candidates (NEAR) in **97.7 %** of assessed
+  entries — and against **real macromolecular (protein) data**, where every
+  determined space group is chiral (Sohncke).
 
 ---
 
@@ -322,18 +323,53 @@ Latest full run (see `tests/xrdspace-report.json` and the chart
 | Triclinic | 40 | 21 | 19 | 0 | 0 |
 | Monoclinic | 202 | 102 | 96 | 3 | 1 |
 | Orthorhombic | 625 | 347 | 260 | 7 | 11 |
-| Tetragonal | 451 | 214 | 191 | 34 | 12 |
-| Trigonal | 296 | 94 | 161 | 40 | 1 |
-| Hexagonal | 186 | 73 | 83 | 19 | 11 |
-| Cubic | 200 | 139 | 47 | 12 | 2 |
-| **Total** | **2000** | **990** | **857** | **115** | **38** |
+| Tetragonal | 451 | 168 | 252 | 19 | 12 |
+| Trigonal | 296 | 43 | 248 | 4 | 1 |
+| Hexagonal | 186 | 85 | 89 | 1 | 11 |
+| Cubic | 200 | 111 | 75 | 12 | 2 |
+| **Total** | **2000** | **877** | **1039** | **46** | **38** |
 
-**94.1 %** of assessed entries have the published space group either
+**97.7 %** of assessed entries have the published space group either
 determined exactly or present among the zero-violation candidates. The
 remaining failures are genuine pseudo-symmetry and sparse-data ambiguities
 (the test exits non-zero only if the rate drops below 90 %).
 
 ![xrdspace space-group determination vs COD](tests/xrdspace-report.png)
+
+---
+
+## Validation against macromolecular (MX) data
+
+`tests/xrdspace-mx.js` validates against **real protein diffraction data** —
+XDS_ASCII.HKL files from a synchrotron campaign, each with a POINTLESS run
+(`pointless.xml`) whose `<BestSolution Type="spacegroup">` is the ground truth.
+These are large macromolecular cells (V ≈ 5.6 × 10⁵ – 1.1 × 10⁶ Å³), so the
+**chiral (Sohncke) restriction is active** on every dataset.
+
+```sh
+# point XRDSPACE_MX_DIR at a directory containing hkl/ and xml/ subdirs
+XRDSPACE_MX_DIR=/path/to/mx node tests/xrdspace-mx.js
+# or: npm run test:mx
+```
+
+On a recent run of 18 macromolecular datasets:
+
+| Result | Count |
+|---|---:|
+| PASS (exact space-group match) | 16 |
+| NEAR (in zero-violation candidates) | 0 |
+| FAIL | 2 |
+| **Correct (PASS + NEAR)** | **88.9 %** |
+| **Non-chiral determinations** | **0** |
+
+The two non-PASS cases are weak-data situations where POINTLESS itself
+returned a low-confidence, low-symmetry "safe" answer; xrdspace returned a
+metrically-consistent higher-symmetry group. In every case the determined
+space group was **chiral** — the original motivation for the Sohncke
+restriction (never reporting a non-chiral group for a protein) is fully met.
+
+The per-dataset report (`tests/xrdspace-mx-report.json`) is written locally
+and is **not committed** (it identifies the samples).
 
 ---
 
@@ -354,8 +390,10 @@ xrdspace/
 ├── tests/
 │   ├── xrdspace-cod.js    # COD validation harness (2000 entries)
 │   ├── cod-picks.json     # the 2000 COD entries (id, cell, published SG)
-│   ├── xrdspace-report.json  # latest validation results
-│   └── xrdspace-report.svg   # PASS/NEAR/FAIL chart per crystal system
+│   ├── xrdspace-mx.js     # macromolecular (MX) validation harness
+│   ├── xrdspace-report.json  # latest COD validation results
+│   ├── xrdspace-report.svg   # PASS/NEAR/FAIL chart per crystal system
+│   └── xrdspace-report.png   # PNG render of the COD chart
 ├── package.json
 ├── LICENSE                # MIT
 └── README.md

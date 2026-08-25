@@ -8,7 +8,8 @@
     "xrdspace": "src/xrdspace.js"
   },
   "scripts": {
-    "test": "node tests/xrdspace-cod.js"
+    "test": "node tests/xrdspace-cod.js",
+    "test:mx": "node tests/xrdspace-mx.js"
   },
   "keywords": [
     "crystallography",
