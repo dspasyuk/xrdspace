@@ -1,4 +1,3 @@
-![Uploading xrdspace-report.svg…]()
 # xrdspace
 
 **xrdspace** is a JavaScript (Node.js) tool for **space-group determination and
@@ -29,7 +28,7 @@ SHELXD / SHELXT / SHELXS.
 | 2. Crystal system | From the unit-cell metric (length/angle tolerances), with automatic fallback when the data demands lower symmetry than the metric suggests (pseudo-symmetry) |
 | 3. Laue class | R(sym) merge test over all 11 Laue classes (all settings of 2/m tried); the highest-symmetry metric-compatible class whose R(sym) is close to the intrinsic (−1) merge is chosen |
 | 4. Centering | Bravais lattice (P/A/B/C/I/F/R) from reflection parity (systematic absences of the centering conditions), picking the most restrictive centering with no significant violations |
-| 5. Space group | All candidates of the crystal system + centering are scored by their **systematic-absence conditions** (screw axes and glide planes, op by op, including absences that are simply missing from the data). Ranking: fewest violations → most confirmed absences → Laue-class match → Wilson centricity match |
+| 5. Space group | All candidates of the crystal system + centering are scored by their **systematic-absence conditions** (screw axes and glide planes, op by op, including absences that are simply missing from the data). Ranking: fewest violations → most confirmed absences → Laue-class match → Wilson centricity match. For macromolecular cells (volume > 64 000 Å³, ≈ 40×40×40) candidates are restricted to the **65 chiral (Sohncke) space groups** — see below |
 | 6. Centricity | Wilson-style test on \|E²−1\| (centric ≈ 0.968, acentric ≈ 0.736) used as a tie-breaker |
 | 7. Merge | Reflections merged under the chosen Laue class with 1/σ² weights; merged σ combines the weighted-mean error with the sample scatter |
 | 8. Output | Merged **SHELX** HKL, merged **XDS_ASCII** HKL, a **SHELX `.ins`** instruction file (cell, LATT, SYMM, SFAC/UNIT), and a full merging report (R(merge), R(meas), R(pim), completeness, multiplicity, mean I/σ) |
@@ -77,6 +76,8 @@ node src/xrdspace.js hklin data.hkl hklout merged.hkl spacegroup "P 21/c"
 | `--resolution "lo hi"` | Restrict the analysis to a resolution range in Å (low = large d, high = small d) |
 | `--sigthreshold <n>` | I/σ(I) significance threshold for systematic-absence tests (default `5`) |
 | `--sfac "C H N O"` | Expected elements — or a formula such as `"C12 H16 N2 O4"` — written into the SHELX `.ins` `SFAC`/`UNIT` lines for SHELXT |
+| `--chiral` | Restrict candidates to the 65 **chiral (Sohncke)** space groups. This is the **default for macromolecular cells** (volume > 64 000 Å³, ≈ 40×40×40 Å) |
+| `--no-chiral` | Allow non-chiral (centrosymmetric / mirror) space groups even for large cells |
 | `--help`, `-h` | Show help |
 | `--version`, `-v` | Show version |
 
@@ -140,6 +141,24 @@ Merged HKL written to:
   data_merged.ins  (SHELX instructions, matching cell/space group)
 ```
 
+### Chiral (Sohncke) space groups for macromolecular data
+
+Protein and other macromolecular crystals are almost always in one of the
+**65 chiral (Sohncke) space groups** — groups without inversion, mirrors,
+glides or roto-inversions. To avoid reporting a non-chiral group (e.g.
+`P 21/c`) for a protein dataset, xrdspace automatically restricts the
+candidates to the Sohncke groups when the **unit-cell volume exceeds
+64 000 Å³** (a 40 × 40 × 40 Å cube):
+
+- The restriction is **not a hard veto**: if no Sohncke group is consistent
+  with the systematic absences (i.e. every chiral candidate has violations),
+  xrdspace falls back to the full candidate list, so a genuinely
+  non-centrosymmetric-free large cell is still handled.
+- The restriction is reported in the output:
+  `Chiral restriction : on (Sohncke space groups only)`.
+- Override it explicitly with `--chiral` (force on) or `--no-chiral`
+  (force off).
+
 ### Output files
 
 | File | Format | Use |
@@ -172,6 +191,7 @@ Runs the full analysis on HKL file **text** and returns a result object.
 | `xdsOutput` | `string` | `OUTPUT_FILE` name written into the merged XDS_ASCII header |
 | `sfac` | `string[]` | Element symbols for the `.ins` `SFAC` line |
 | `unit` | `number[]` | Counts per element for the `.ins` `UNIT` line |
+| `chiral` | `boolean` | Restrict candidates to the 65 chiral (Sohncke) space groups. Default: `true` for cells with volume > 64 000 Å³ (≈ 40×40×40), `false` otherwise |
 
 **Return value**
 
@@ -185,6 +205,7 @@ Runs the full analysis on HKL file **text** and returns a result object.
     laueClass, laueRSym, centering,
     centricity,          // 'centric' | 'acentric' | 'indeterminate'
     centricityScore,     // <|E^2-1|>
+    chiral,              // true when the Sohncke (chiral) restriction was applied
     forced,              // true when a space group was forced
     bestSpaceGroup, bestSpaceGroupNumber,
     merged: { nUnique, nObs, completeness, rMerge, rPim, meanIsig, meanMultiplicity }
@@ -220,6 +241,8 @@ the special code `'NO_CELL'` (the file has no unit cell — supply `options.cell
 | `resolveSpaceGroup(sgData, spec)` | Resolve a space group by number or symbol |
 | `writeShelxIns(sg, cell, options)` | Generate a SHELX `.ins` file for a given space group and cell |
 | `verdict(result)` | One-line verdict string, e.g. `"P 21/c (No. 14)"` |
+| `isSohncke(sg)` | `true` when a space group is chiral (no op with negative rotation determinant) |
+| `cellVolume(cell)` | Unit-cell volume in Å³ |
 
 ---
 
@@ -255,7 +278,11 @@ the special code `'NO_CELL'` (the file has no unit cell — supply `options.cell
    screw/glide operation with a non-lattice translation is tested: reflections
    invariant under the operation must have phase `h·t ≈ 0 mod 1`. Strong
    violations reject the group; confirmed absences (weak or entirely missing
-   forbidden reflections along the invariant axes/planes) rank it.
+   forbidden reflections along the invariant axes/planes) rank it. For
+   macromolecular cells (volume > 64 000 Å³) the candidate pool is first
+   restricted to the 65 Sohncke (chiral) groups — a group is chiral when none
+   of its operations has a negative rotation determinant — with automatic
+   fallback to the full pool if no chiral group is consistent with the data.
 5. **Centricity** — the Wilson statistic <|E²−1|> (E² = I/⟨I⟩) distinguishes
    centric (≈ 0.968) from acentric (≈ 0.736) data and breaks remaining ties.
 6. **Merging** — reflections are grouped into Laue orbits (canonical
@@ -306,7 +333,7 @@ determined exactly or present among the zero-violation candidates. The
 remaining failures are genuine pseudo-symmetry and sparse-data ambiguities
 (the test exits non-zero only if the rate drops below 90 %).
 
-<img width="900" height="420" alt="xrdspace-report" src="https://github.com/user-attachments/assets/21c1fe8b-f30b-45de-a911-ccc488b7b20b" />
+![xrdspace space-group determination vs COD](tests/xrdspace-report.png)
 
 ---
 

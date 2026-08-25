@@ -42,6 +42,15 @@ Data:
   --sfac "C H N O"                  Expected elements (or formula, e.g. "C12 H16 N2 O4")
                                     used for the SHELXT .ins SFAC/UNIT lines
 
+Space-group selection:
+  --chiral                          Restrict candidates to the 65 chiral (Sohncke)
+                                    space groups. This is the DEFAULT for
+                                    macromolecular cells (volume > 64000 A^3,
+                                    about 40x40x40 A); use --no-chiral to allow
+                                    non-chiral groups anyway.
+  --no-chiral                       Allow non-chiral (centrosymmetric / mirror)
+                                    space groups even for large cells.
+
 Misc:
   --help, -h          Show this help
   --version, -v       Show version
@@ -74,6 +83,7 @@ function printAnalysis(result) {
     console.log(`  Crystal system     : ${s.crystalSystem}${s.uniqueAxis ? ' (unique ' + s.uniqueAxis + ')' : ''}`);
     console.log(`  Lattice centering  : ${s.centering}`);
     console.log(`  Centrosymmetric    : ${s.centricity}  (<|E^2-1|> = ${s.centricityScore.toFixed(3)})`);
+    if (s.chiral) console.log('  Chiral restriction : on (Sohncke space groups only)');
     console.log(`  Laue class         : ${s.laueClass}   R(sym) = ${(s.laueRSym * 100).toFixed(2)} %`);
     console.log('----------------------------------------------');
     console.log('  R(sym) by Laue class:');
@@ -137,6 +147,7 @@ async function promptCell() {
         hklin: 1, hklout: 1, xdsout: 1, spacegroup: 1, sg: 1, laue: 1, sigthreshold: 1,
         sfac: 1, formula: 1, log: 1,
         cell: 6, resolution: 2,
+        chiral: 0, 'no-chiral': 0, nochiral: 0,
     };
 
 // Split a string on whitespace with a single pass.
@@ -188,7 +199,7 @@ function parseSfacInput(input) {
 }
 
 function parseArgs(argv) {
-    const args = { hklin: null, hklout: null, xdsout: null, cell: null, spaceGroup: null, laue: null, resolution: null, sigThreshold: 5, sfac: null, log: null, help: false, version: false };
+    const args = { hklin: null, hklout: null, xdsout: null, cell: null, spaceGroup: null, laue: null, resolution: null, sigThreshold: 5, sfac: null, log: null, chiral: null, help: false, version: false };
     let i = 0;
     while (i < argv.length) {
         const a = argv[i];
@@ -204,7 +215,8 @@ function parseArgs(argv) {
             if (key === 'sg') key = 'spacegroup';
             n = N_VALUES[key] !== undefined ? N_VALUES[key] : 1;
         } else if (a === 'hklin' || a === 'hklout' || a === 'xdsout' || a === 'spacegroup' || a === 'laue'
-            || a === 'cell' || a === 'resolution' || a === 'sigthreshold' || a === 'sfac' || a === 'formula' || a === 'log') {
+            || a === 'cell' || a === 'resolution' || a === 'sigthreshold' || a === 'sfac' || a === 'formula' || a === 'log'
+            || a === 'chiral' || a === 'no-chiral' || a === 'nochiral') {
             key = a;
             n = N_VALUES[a];
         } else if (!a.startsWith('-')) {
@@ -242,6 +254,8 @@ function parseArgs(argv) {
         else if (key === 'hklout') args.hklout = vals[0];
         else if (key === 'xdsout') args.xdsout = vals[0];
         else if (key === 'log') args.log = vals[0];
+        else if (key === 'chiral') args.chiral = true;
+        else if (key === 'no-chiral' || key === 'nochiral') args.chiral = false;
         else if (key === 'spacegroup') args.spaceGroup = vals[0];
         else if (key === 'laue') args.laue = vals[0];
         else if (key === 'sigthreshold') {
@@ -339,6 +353,7 @@ async function main() {
         sigThreshold: args.sigThreshold,
         sfac: sfacOpts.sfac,
         unit: sfacOpts.unit,
+        chiral: args.chiral,
     });
     printAnalysis(result);
 

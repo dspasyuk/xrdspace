@@ -13,7 +13,7 @@ import { fileURLToPath } from 'node:url';
 
 import { parseHkl } from './hkl-parser.js';
 import { buildLaueGroups, sgLaueClass } from './laue.js';
-import { analyzeSpaceGroup, crystalSystemFromCell, scoreSpaceGroup, isCentrosymmetric, laueClassOfSg } from './analyze.js';
+import { analyzeSpaceGroup, crystalSystemFromCell, scoreSpaceGroup, isCentrosymmetric, laueClassOfSg, isSohncke, cellVolume } from './analyze.js';
 import { mergeReflections, computeMergeStatistics, writeShelxHkl, writeXdsAscii, buildMergingReport, dSpacing } from './merge.js';
 import { parseOperation } from './op-math.js';
 
@@ -214,6 +214,10 @@ function shelxSymmOps(ops, centrosymmetric) {
  *   resolution: { dmin, dmax },            // optionally restrict to a resolution range
  *   sigThreshold: number,                  // significance threshold for absences (default 5)
  *   xdsOutput: string,                     // OUTPUT_FILE name for the merged XDS_ASCII
+ *   chiral: boolean,                       // restrict candidates to the 65 chiral
+ *                                          // (Sohncke) space groups. Default: true
+ *                                          // for macromolecular cells (volume >
+ *                                          // 64000 A^3, ~40x40x40), false otherwise.
  * }
  * Returns { ok, error?, summary, best, merge }.
  */
@@ -262,7 +266,7 @@ export function analyzeHkl(text, options = {}) {
     const laueGroups = getLaueGroups();
     const sgData = loadSpaceGroups();
     const metric = crystalSystemFromCell(cell);
-    const result = analyzeSpaceGroup(sgData, reflections, cell, { laueGroups });
+    const result = analyzeSpaceGroup(sgData, reflections, cell, { laueGroups, chiral: options.chiral });
 
     // Optionally force a specific space group.
     const forcedSG = options.spaceGroup !== undefined
@@ -358,6 +362,7 @@ export function analyzeHkl(text, options = {}) {
         centering: forcedSG ? centeringOf(forcedSG) : result.centering,
         centricity: result.centricity.centric ? 'centric' : (result.centricity.acentric ? 'acentric' : 'indeterminate'),
         centricityScore: result.centricity.score,
+        chiral: result.chiral,
         forced: !!forcedSG,
         bestSpaceGroup: usedSG ? usedSG.hm : null,
         bestSpaceGroupNumber: usedSG ? usedSG.id : null,
@@ -392,3 +397,5 @@ export function verdict(result) {
     const b = result.best;
     return b ? `${b.hm} (No. ${b.id})` : 'indeterminate';
 }
+
+export { isSohncke, cellVolume };
