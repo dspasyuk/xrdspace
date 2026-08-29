@@ -162,7 +162,7 @@ cell matches a query cell — e.g. to identify an unknown phase from the cell,
 or to find isostructural (cell-isomorphous) compounds:
 
 ```sh
-node src/xrdspace.js --pdbsearch --cell "79.98 79.98 123.95 90 90 120"
+node src/xrdspace.js --pdbsearch --cell "40.203 70.080 73.872 113.284 92.073 99.361"
 node src/xrdspace.js --codsearch --cell "4.7606 4.7606 12.994 90 90 120"
 node src/xrdspace.js --search    --cell "10.86 8.70 7.76 90 102.9 90" --tol 1.5 --tol-angle 2 --limit 10
 ```
@@ -182,27 +182,24 @@ How the matching works:
   max angle deviation in degrees)`. 100 % means an identical lattice. Results
   are ranked by this score and the "best solution" is listed first.
 
-Example output (`--pdbsearch` for the protein cell above):
+Example output (`--pdbsearch` for the triclinic protein cell above):
 
 ```
 ==============================================
   xrdspace  —  unit-cell database search
 ==============================================
-  Query cell         : 79.980 79.980 123.950  90.0 90.0 120.0
+  Query cell         : 40.203 70.080 73.872  113.3 92.1 99.4
   Databases          : PDB
   Length tolerance   : 1%   angle tolerance: 1.5 deg
   Match score        : 100 - (max rel. length dev % + max angle dev deg)
 ----------------------------------------------
-  Standard settings  : 6
+  Standard settings  : 24
 ----------------------------------------------
   Rank   Match  DB    ID      Space group      a       b       c    alpha  beta  gamma
   ------------------------------------------------------------------------------------------------
-     1   99.6%  PDB  25YR     P 65            80.33 80.33 124.36  90.0 90.0 120.0
-       High-resolution crystal structure of Arp2/3 complex inhibitor Arpin
-       space group #170
-     2   99.2%  PDB  3UQH     P 31 2 1        80.47 80.47 124.93  90.0 90.0 120.0
-       Crystal structure of aba receptor pyl10 (apo)
-       space group #152
+     1  100.0%  PDB  3BEP     P 1             40.20 70.08 73.87  113.3 92.1 99.4
+       Structure of a sliding clamp on DNA
+       space group #1
 ==============================================
 ```
 
