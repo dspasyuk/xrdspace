@@ -399,3 +399,15 @@ export function verdict(result) {
 }
 
 export { isSohncke, cellVolume };
+
+// Unit-cell database search (COD + PDB).
+export {
+    niggliReduce,
+    cellSettings,
+    transformCell,
+    cellSimilarity,
+    cellToleranceWindows,
+    searchCodByCell,
+    searchPdbByCell,
+    searchByCell,
+} from './cell-search.js';

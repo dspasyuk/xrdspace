@@ -13,6 +13,10 @@ SHELXD / SHELXT / SHELXS.
   **library** (import `analyzeHkl` from your own code or server).
 - Ships with a complete dictionary of all **230 space groups** (every setting,
   with full general-position symmetry operations).
+- **Unit-cell database search**: search the **Crystallography Open Database
+  (COD)** and the **RCSB Protein Data Bank (PDB)** for structures matching a
+  query cell (`--codsearch / --pdbsearch / --search`), ranked by a
+  Niggli-reduced-cell match score.
 - Validated against **2000 real structures from the Crystallography Open
   Database (COD)**: the published space group is recovered exactly (PASS) or
   appears among the zero-violation candidates (NEAR) in **97.7 %** of assessed
@@ -33,6 +37,7 @@ SHELXD / SHELXT / SHELXS.
 | 6. Centricity | Wilson-style test on \|E²−1\| (centric ≈ 0.968, acentric ≈ 0.736) used as a tie-breaker |
 | 7. Merge | Reflections merged under the chosen Laue class with 1/σ² weights; merged σ combines the weighted-mean error with the sample scatter |
 | 8. Output | Merged **SHELX** HKL, merged **XDS_ASCII** HKL, a **SHELX `.ins`** instruction file (cell, LATT, SYMM, SFAC/UNIT), and a full merging report (R(merge), R(meas), R(pim), completeness, multiplicity, mean I/σ) |
+| 9. Cell search | Search the **Crystallography Open Database (COD)** and the **RCSB Protein Data Bank (PDB)** for structures whose unit cell matches a query cell. Matching is done in the **Niggli-reduced cell**, so different settings of the same lattice (axis permutations, unique-axis choices, obtuse/acute angle conventions) are recognised automatically and ranked by match score |
 
 ---
 
@@ -53,6 +58,7 @@ cd xrdspace
 
 ```
 node src/xrdspace.js --hklin <file.hkl> [options]
+node src/xrdspace.js --search --cell "a b c alpha beta gamma" [options]
 ```
 
 Bare POINTLESS-style keywords (`hklin`, `hklout`, `spacegroup`, `cell`, …) are
@@ -79,6 +85,12 @@ node src/xrdspace.js hklin data.hkl hklout merged.hkl spacegroup "P 21/c"
 | `--sfac "C H N O"` | Expected elements — or a formula such as `"C12 H16 N2 O4"` — written into the SHELX `.ins` `SFAC`/`UNIT` lines for SHELXT |
 | `--chiral` | Restrict candidates to the 65 **chiral (Sohncke)** space groups. This is the **default for macromolecular cells** (volume > 64 000 Å³, ≈ 40×40×40 Å) |
 | `--no-chiral` | Allow non-chiral (centrosymmetric / mirror) space groups even for large cells |
+| `--search` | **Search** both the Crystallography Open Database (COD) and the RCSB Protein Data Bank (PDB) for structures with a unit cell matching `--cell`. No HKL file is needed |
+| `--codsearch` | Search only the COD |
+| `--pdbsearch` | Search only the PDB |
+| `--tol <pct>` | Relative length tolerance in **%** for the cell match (default `1.0`). COD reports esds on the cell parameters (shown in the results); PDB does not, so a few % is usually appropriate for protein data |
+| `--tol-angle <deg>` | Angle tolerance in **degrees** (default `1.5`) |
+| `--limit <n>` | Maximum number of matches to report (default `20`) |
 | `--help`, `-h` | Show help |
 | `--version`, `-v` | Show version |
 
@@ -140,6 +152,58 @@ Merged HKL written to:
   data_merged.hkl  (SHELX format, ready for SHELXD/SHELXT)
   data_XDS.HKL     (merged XDS_ASCII)
   data_merged.ins  (SHELX instructions, matching cell/space group)
+```
+
+### Unit-cell database search (COD + PDB)
+
+Instead of analyzing an HKL file you can search the Crystallography Open
+Database (COD) and the RCSB Protein Data Bank (PDB) for structures whose unit
+cell matches a query cell — e.g. to identify an unknown phase from the cell,
+or to find isostructural (cell-isomorphous) compounds:
+
+```sh
+node src/xrdspace.js --pdbsearch --cell "79.98 79.98 123.95 90 90 120"
+node src/xrdspace.js --codsearch --cell "4.7606 4.7606 12.994 90 90 120"
+node src/xrdspace.js --search    --cell "10.86 8.70 7.76 90 102.9 90" --tol 1.5 --tol-angle 2 --limit 10
+```
+
+How the matching works:
+
+- The query cell is expanded into its **standard settings** (axis permutations
+  and sign/unique-axis conventions), so a query reported in one setting finds
+  entries deposited in another — e.g. a monoclinic cell queried with unique
+  axis *b* finds structures published with the equivalent setting.
+- Both databases are searched within the requested tolerance windows
+  (`--tol` length %, `--tol-angle` degrees; defaults 1 % and 1.5°). PDB does
+  not store esds on cell parameters, so a wider tolerance is usually needed for
+  protein data; COD esds are shown in the results when present.
+- Every hit is reduced to its **Niggli-reduced cell** (Krivý–Gruber 1976) and
+  scored against the query: `match = 100 − (max relative length deviation in % +
+  max angle deviation in degrees)`. 100 % means an identical lattice. Results
+  are ranked by this score and the "best solution" is listed first.
+
+Example output (`--pdbsearch` for the protein cell above):
+
+```
+==============================================
+  xrdspace  —  unit-cell database search
+==============================================
+  Query cell         : 79.980 79.980 123.950  90.0 90.0 120.0
+  Databases          : PDB
+  Length tolerance   : 1%   angle tolerance: 1.5 deg
+  Match score        : 100 - (max rel. length dev % + max angle dev deg)
+----------------------------------------------
+  Standard settings  : 6
+----------------------------------------------
+  Rank   Match  DB    ID      Space group      a       b       c    alpha  beta  gamma
+  ------------------------------------------------------------------------------------------------
+     1   99.6%  PDB  25YR     P 65            80.33 80.33 124.36  90.0 90.0 120.0
+       High-resolution crystal structure of Arp2/3 complex inhibitor Arpin
+       space group #170
+     2   99.2%  PDB  3UQH     P 31 2 1        80.47 80.47 124.93  90.0 90.0 120.0
+       Crystal structure of aba receptor pyl10 (apo)
+       space group #152
+==============================================
 ```
 
 ### Chiral (Sohncke) space groups for macromolecular data
@@ -244,6 +308,14 @@ the special code `'NO_CELL'` (the file has no unit cell — supply `options.cell
 | `verdict(result)` | One-line verdict string, e.g. `"P 21/c (No. 14)"` |
 | `isSohncke(sg)` | `true` when a space group is chiral (no op with negative rotation determinant) |
 | `cellVolume(cell)` | Unit-cell volume in Å³ |
+| `niggliReduce(cell)` | Niggli-reduced cell (Krivý–Gruber 1976): `{a,b,c,alpha,beta,gamma,A,B,C,D,E,F}` |
+| `cellSettings(cell)` | Distinct standard settings of a cell (axis permutations / sign conventions) |
+| `transformCell(cell, M)` | Cell after an integer change of basis M |
+| `cellSimilarity(cellA, cellB)` | Reduced-cell match: `{match, dLmaxPct, dAmaxDeg, reducedQuery, reducedCandidate}` |
+| `cellToleranceWindows(settings, opts)` | Per-setting search windows `{aMin,…}` from a tolerance |
+| `searchCodByCell(cell, opts)` | Search the COD by unit cell (returns ranked entries incl. esds) |
+| `searchPdbByCell(cell, opts)` | Search the RCSB PDB by unit cell (returns ranked entries) |
+| `searchByCell(cell, opts)` | Search both databases: `{settings, results, total, errors}` |
 
 ---
 
@@ -386,11 +458,14 @@ xrdspace/
 │   ├── laue.js            # the 11 Laue classes (built from the dictionary)
 │   ├── merge.js           # reflection merging, statistics, SHELX/XDS/.ins writers
 │   ├── op-math.js         # symmetry-operation parsing and direct↔reciprocal math
+│   ├── cell-search.js     # unit-cell database search: Niggli reduction, cell
+│   │                      #   similarity, standard settings, COD + PDB clients
 │   └── space-groups.js    # dictionary of all 230 space groups (all settings)
 ├── tests/
 │   ├── xrdspace-cod.js    # COD validation harness (2000 entries)
 │   ├── cod-picks.json     # the 2000 COD entries (id, cell, published SG)
 │   ├── xrdspace-mx.js     # macromolecular (MX) validation harness
+│   ├── xrdspace-cellsearch.js  # offline tests of Niggli reduction / similarity
 │   ├── xrdspace-report.json  # latest COD validation results
 │   ├── xrdspace-report.svg   # PASS/NEAR/FAIL chart per crystal system
 │   └── xrdspace-report.png   # PNG render of the COD chart

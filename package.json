@@ -9,7 +9,8 @@
   },
   "scripts": {
     "test": "node tests/xrdspace-cod.js",
-    "test:mx": "node tests/xrdspace-mx.js"
+    "test:mx": "node tests/xrdspace-mx.js",
+    "test:cell": "node tests/xrdspace-cellsearch.js"
   },
   "keywords": [
     "crystallography",
