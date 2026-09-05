@@ -94,8 +94,12 @@ export function writeShelxIns(usedSG, cell, options = {}) {
     for (const op of shelxSymmOps(usedSG.s, centrosymmetric)) {
         out.push(`SYMM ${op}`);
     }
-    const defaultSfac = ['C', 'H', 'N', 'O', 'F', 'Na', 'Mg', 'Al', 'Si', 'P', 'S', 'Cl', 'K', 'Ca', 'Fe', 'Ni', 'Cu', 'Zn', 'Br', 'I'];
-    const sfac = options.sfac && options.sfac.length ? options.sfac : defaultSfac;
+    // SHELXD/SHELXS only accept up to 13 scattering-factor types (a longer
+    // SFAC line makes them abort with "** WRONG NUMBER OF PARAMETERS **"), so
+    // the default list must stay at or below that. Users with other elements
+    // should pass their expected formula via `options.sfac`/`options.unit`.
+    const defaultSfac = ['C', 'H', 'N', 'O', 'F', 'Na', 'Mg', 'Al', 'Si', 'P', 'S', 'Cl', 'K'];
+    const sfac = options.sfac && options.sfac.length ? options.sfac.slice(0, 13) : defaultSfac;
     let unit = options.unit && options.unit.length === sfac.length ? options.unit : null;
     if (!unit) {
         unit = [];
@@ -411,3 +415,11 @@ export {
     searchPdbByCell,
     searchByCell,
 } from './cell-search.js';
+
+// Offline PDB space-group validation (data/pdb-cells.json).
+export {
+    buildPdbLookupTable,
+    loadPdbLookup,
+    searchPdbLookup,
+    validateSpaceGroupAgainstPdb,
+} from './pdb-lookup.js';

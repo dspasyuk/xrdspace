@@ -10,7 +10,9 @@
   "scripts": {
     "test": "node tests/xrdspace-cod.js",
     "test:mx": "node tests/xrdspace-mx.js",
-    "test:cell": "node tests/xrdspace-cellsearch.js"
+    "test:cell": "node tests/xrdspace-cellsearch.js",
+    "test:pdb": "node tests/xrdspace-pdbvalid.js",
+    "build:pdb": "node scripts/build-pdb-table.js"
   },
   "keywords": [
     "crystallography",

@@ -38,6 +38,7 @@ SHELXD / SHELXT / SHELXS.
 | 7. Merge | Reflections merged under the chosen Laue class with 1/σ² weights; merged σ combines the weighted-mean error with the sample scatter |
 | 8. Output | Merged **SHELX** HKL, merged **XDS_ASCII** HKL, a **SHELX `.ins`** instruction file (cell, LATT, SYMM, SFAC/UNIT), and a full merging report (R(merge), R(meas), R(pim), completeness, multiplicity, mean I/σ) |
 | 9. Cell search | Search the **Crystallography Open Database (COD)** and the **RCSB Protein Data Bank (PDB)** for structures whose unit cell matches a query cell. Matching is done in the **Niggli-reduced cell**, so different settings of the same lattice (axis permutations, unique-axis choices, obtuse/acute angle conventions) are recognised automatically and ranked by match score |
+| 10. PDB validation | `--valid` checks the determined space group against an **offline PDB unit-cell/space-group lookup table** (`data/pdb-cells.json`, built once from RCSB). No network access at validation time: reports **VERIFIED / MISMATCH / AMBIGUOUS (enantiomorph) / INDETERMINATE**, with the space groups PDB assigns to matching cells |
 
 ---
 
@@ -91,6 +92,8 @@ node src/xrdspace.js hklin data.hkl hklout merged.hkl spacegroup "P 21/c"
 | `--tol <pct>` | Relative length tolerance in **%** for the cell match (default `1.0`). COD reports esds on the cell parameters (shown in the results); PDB does not, so a few % is usually appropriate for protein data |
 | `--tol-angle <deg>` | Angle tolerance in **degrees** (default `1.5`) |
 | `--limit <n>` | Maximum number of matches to report (default `20`) |
+| `--valid` | **Validate** the determined space group against an offline PDB unit-cell/space-group lookup table (default `data/pdb-cells.json`). No network access: reports VERIFIED / MISMATCH / AMBIGUOUS (enantiomorph) / INDETERMINATE, with the space groups the PDB assigns to cells matching the query cell (uses `--tol` / `--tol-angle`) |
+| `--pdb-table <file>` | Path to the PDB lookup table used by `--valid` (default: `data/pdb-cells.json`). Build it once with `node scripts/build-pdb-table.js` |
 | `--help`, `-h` | Show help |
 | `--version`, `-v` | Show version |
 
@@ -203,6 +206,62 @@ Example output (`--pdbsearch` for the triclinic protein cell above):
 ==============================================
 ```
 
+### PDB space-group validation (`--valid`)
+
+Space-group determination sometimes makes mistakes (pseudo-symmetry, weak data).
+To cross-check a determination against the PDB **without querying RCSB on every
+run**, xrdspace ships an offline lookup: a single JSON table with the unit cell
+and space group of every PDB entry.
+
+Build the table once (downloads cell + space-group data for the whole PDB via
+the RCSB Search + GraphQL APIs — no mmCIF files, typically under a minute):
+
+```sh
+node scripts/build-pdb-table.js            # writes data/pdb-cells.json (~40 MB, git-ignored)
+node scripts/build-pdb-table.js --limit 5000 --out mini.json   # partial table (testing)
+```
+
+Then validate the space group determined from an HKL file:
+
+```sh
+node src/xrdspace.js --hklin data_XDS.HKL --valid
+node src/xrdspace.js --hklin data_XDS.HKL --valid --pdb-table /path/to/pdb-cells.json
+```
+
+The determined space group is checked against the PDB entries whose
+**Niggli-reduced cell** matches the query cell within `--tol` (length %) and
+`--tol-angle` (degrees) — different settings of the same lattice are
+recognised automatically, exactly like the cell search. The result is one of:
+
+- **VERIFIED** — PDB assigns the same space group to matching cells.
+- **MISMATCH** — matching PDB cells belong to a different space group; the
+  assignment deserves a second look.
+- **AMBIGUOUS** — PDB assigns the *enantiomorph* (e.g. `P 41 21 2` vs
+  `P 43 21 2`): the two cannot be told apart from the diffraction pattern
+  alone (only by anomalous scattering).
+- **INDETERMINATE** — no PDB structure matches the cell (widen the tolerances
+  or rebuild the table after the PDB grows).
+
+Example output:
+
+```
+==============================================
+  xrdspace  —  PDB space-group validation
+==============================================
+  Lookup table      : data/pdb-cells.json (2289 entries)
+  Query cell        : 63.150 83.590 53.800  90.0 99.3 90.0
+  Tolerances        : 1% lengths, 1.5 deg angles
+  Matching PDB      : 2 entries
+  PDB space groups  : P 1 21 1 (No. 4) x2
+  Matches           : 1BAB (No. 4), 1A01 (No. 4)
+----------------------------------------------
+  Determined SG     : P 1 21/c 1 (No. 14)
+  Result            : MISMATCH
+    PDB structures with this cell are in space group 4;
+    No. 14 was determined. Check the indexing / space-group assignment.
+==============================================
+```
+
 ### Chiral (Sohncke) space groups for macromolecular data
 
 Protein and other macromolecular crystals are almost always in one of the
@@ -228,6 +287,29 @@ candidates to the Sohncke groups when the **unit-cell volume exceeds
 | `<input>_merged.hkl` | SHELX five-column `H K L I SIG(I)` | Feed directly to **SHELXD / SHELXT / SHELXS** |
 | `<input>_XDS.HKL` | Merged XDS_ASCII (`MERGE=TRUE`, `FRIEDELS_LAW=TRUE`) with cell, space group, wavelength and resolution-range header | Re-integration / further processing |
 | `<input>_merged.ins` | SHELX instruction file: `TITL`, `CELL`, `LATT` (sign encodes centrosymmetry), `SYMM` (generating operations, one per inversion pair for centric groups), `SFAC`, `UNIT`, `HKLF 4`, `TREF 50` | Structure solution with SHELXT |
+
+### Model transform between space groups (`sg-model.js`)
+
+Once a structure exists, the space group determined from the HKL file may differ
+from the one the model was solved/refined in. `src/sg-model.js` rewrites a SHELX
+`.res/.ins` model into a target space group: the model's asymmetric unit is
+expanded under its **current** symmetry (`LATT` + `SYMM`) to reconstruct the full
+cell content, then reduced to an asymmetric unit under the **target** group's
+operators. Raising the symmetry therefore removes redundant (symmetry-related)
+molecules; lowering it adds the symmetry partners — coordinates stay in the same
+fractional frame, scattering-factor types, occupancies and ADP columns are
+preserved, and atoms are renumbered.
+
+```js
+import { transformModelToSpaceGroup, parseShelxModel, opsFromLattSymm } from './src/sg-model.js';
+
+const r = transformModelToSpaceGroup(resText, 'P -1');   // or 2, or 'P 21/c'
+// r = { ok, hm, sgId, nOldAsu, nFull, nNewAsu, removed, added, report, res }
+```
+
+Example: a P-1 asymmetric unit forced to P 1 grows from 2 to 4 atoms (the
+inversion partners become independent); transforming back to P -1 removes them
+again (`removed = 2`).
 
 ---
 
@@ -313,6 +395,13 @@ the special code `'NO_CELL'` (the file has no unit cell — supply `options.cell
 | `searchCodByCell(cell, opts)` | Search the COD by unit cell (returns ranked entries incl. esds) |
 | `searchPdbByCell(cell, opts)` | Search the RCSB PDB by unit cell (returns ranked entries) |
 | `searchByCell(cell, opts)` | Search both databases: `{settings, results, total, errors}` |
+| `buildPdbLookupTable(rows)` | Build the offline PDB lookup entries from raw `{id, cell, sg, hm}` rows (computes Niggli-reduced cells, sorts by reduced a) |
+| `loadPdbLookup(file)` | Load the PDB lookup table JSON (cached) |
+| `searchPdbLookup(table, cell, opts)` | Entries of the lookup table whose Niggli-reduced cell matches `cell` within `tolLen`/`tolAng` |
+| `validateSpaceGroupAgainstPdb(table, cell, sgId, opts)` | Validate SG number `sgId` against the table: `{verdict, matches, total, sgNumbers, sgCounts, ...}` with `verdict` = `verified \| mismatch \| enantiomorph \| none` |
+| `transformModelToSpaceGroup(text, sg)` | Rewrite a SHELX `.res/.ins` model into space group `sg` (number/symbol/object): `{ok, hm, added, removed, report, res}` — adds symmetry partners when lowering symmetry, removes redundant molecules when raising it |
+| `parseShelxModel(text)` | Parse a SHELX model: `{title, cell, latt, symm, sfac, atoms, ...}` |
+| `opsFromLattSymm(latt, symm)` | Full general-position operator set (closed) from `LATT` + `SYMM` lines |
 
 ---
 
@@ -457,15 +546,22 @@ xrdspace/
 │   ├── op-math.js         # symmetry-operation parsing and direct↔reciprocal math
 │   ├── cell-search.js     # unit-cell database search: Niggli reduction, cell
 │   │                      #   similarity, standard settings, COD + PDB clients
+│   ├── pdb-lookup.js      # offline PDB lookup: build/load table, match by
+│   │                      #   Niggli-reduced cell, validate space group (--valid)
 │   └── space-groups.js    # dictionary of all 230 space groups (all settings)
+├── scripts/
+│   └── build-pdb-table.js # download PDB cell+space-group data from RCSB and
+│                          #   write data/pdb-cells.json (for --valid)
 ├── tests/
 │   ├── xrdspace-cod.js    # COD validation harness (2000 entries)
 │   ├── cod-picks.json     # the 2000 COD entries (id, cell, published SG)
 │   ├── xrdspace-mx.js     # macromolecular (MX) validation harness
 │   ├── xrdspace-cellsearch.js  # offline tests of Niggli reduction / similarity
+│   ├── xrdspace-pdbvalid.js    # offline tests of the PDB lookup (--valid)
 │   ├── xrdspace-report.json  # latest COD validation results
 │   ├── xrdspace-report.svg   # PASS/NEAR/FAIL chart per crystal system
 │   └── xrdspace-report.png   # PNG render of the COD chart
+├── data/                  # generated PDB lookup table (git-ignored, ~40 MB)
 ├── package.json
 ├── LICENSE                # MIT
 └── README.md

@@ -12,10 +12,14 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import readline from 'node:readline';
+import { fileURLToPath } from 'node:url';
 
 import { analyzeHkl } from './index.js';
 import { parseHkl } from './hkl-parser.js';
 import { searchByCell } from './cell-search.js';
+import { loadPdbLookup, validateSpaceGroupAgainstPdb } from './pdb-lookup.js';
+
+const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
 const VERSION = '1.0.0';
 
@@ -65,6 +69,18 @@ Space-group selection:
                                     non-chiral groups anyway.
   --no-chiral                       Allow non-chiral (centrosymmetric / mirror)
                                     space groups even for large cells.
+
+PDB space-group validation:
+  --valid                           Validate the determined space group against an
+                                    offline PDB unit-cell / space-group lookup
+                                    table. No network access at validation time:
+                                    reports VERIFIED / MISMATCH / AMBIGUOUS
+                                    (enantiomorph) / INDETERMINATE, with the space
+                                    groups the PDB assigns to cells matching
+                                    --cell. Uses --tol / --tol-angle for the match.
+  --pdb-table <file>                Path to the PDB lookup table (default:
+                                    data/pdb-cells.json). Build it once with:
+                                      node scripts/build-pdb-table.js
 
 Misc:
   --help, -h          Show this help
@@ -160,9 +176,9 @@ async function promptCell() {
 // Number of values consumed by each bare keyword / option.
     const N_VALUES = {
         hklin: 1, hklout: 1, xdsout: 1, spacegroup: 1, sg: 1, laue: 1, sigthreshold: 1,
-        sfac: 1, formula: 1, log: 1, tol: 1, 'tol-angle': 1, limit: 1,
+        sfac: 1, formula: 1, log: 1, tol: 1, 'tol-angle': 1, limit: 1, 'pdb-table': 1,
         cell: 6, resolution: 2,
-        chiral: 0, 'no-chiral': 0, nochiral: 0,
+        chiral: 0, 'no-chiral': 0, nochiral: 0, valid: 0,
         search: 0, codsearch: 0, pdbsearch: 0,
     };
 
@@ -215,7 +231,7 @@ function parseSfacInput(input) {
 }
 
 function parseArgs(argv) {
-    const args = { hklin: null, hklout: null, xdsout: null, cell: null, spaceGroup: null, laue: null, resolution: null, sigThreshold: 5, sfac: null, log: null, chiral: null, help: false, version: false, search: null, codsearch: false, pdbsearch: false, tol: 1.0, tolAngle: 1.5, limit: 20 };
+    const args = { hklin: null, hklout: null, xdsout: null, cell: null, spaceGroup: null, laue: null, resolution: null, sigThreshold: 5, sfac: null, log: null, chiral: null, help: false, version: false, search: null, codsearch: false, pdbsearch: false, tol: 1.0, tolAngle: 1.5, limit: 20, valid: false, pdbTable: null };
     let i = 0;
     while (i < argv.length) {
         const a = argv[i];
@@ -235,7 +251,8 @@ function parseArgs(argv) {
         } else if (a === 'hklin' || a === 'hklout' || a === 'xdsout' || a === 'spacegroup' || a === 'laue'
             || a === 'cell' || a === 'resolution' || a === 'sigthreshold' || a === 'sfac' || a === 'formula' || a === 'log'
             || a === 'chiral' || a === 'no-chiral' || a === 'nochiral'
-            || a === 'search' || a === 'codsearch' || a === 'pdbsearch' || a === 'tol' || a === 'tol-angle' || a === 'limit') {
+            || a === 'search' || a === 'codsearch' || a === 'pdbsearch' || a === 'tol' || a === 'tol-angle' || a === 'limit'
+            || a === 'valid' || a === 'pdb-table') {
             key = a;
             n = N_VALUES[a];
         } else if (!a.startsWith('-')) {
@@ -273,6 +290,8 @@ function parseArgs(argv) {
         else if (key === 'hklout') args.hklout = vals[0];
         else if (key === 'xdsout') args.xdsout = vals[0];
         else if (key === 'log') args.log = vals[0];
+        else if (key === 'valid') args.valid = true;
+        else if (key === 'pdb-table') args.pdbTable = vals[0];
         else if (key === 'chiral') args.chiral = true;
         else if (key === 'no-chiral' || key === 'nochiral') args.chiral = false;
         else if (key === 'search') args.search = true;
@@ -406,6 +425,49 @@ function printCellSearch(queryCell, args) {
     console.log('==============================================');
 }
 
+function printPdbValidation(v, opts) {
+    console.log('');
+    console.log('==============================================');
+    console.log('  xrdspace  —  PDB space-group validation');
+    console.log('==============================================');
+    console.log(`  Lookup table      : ${opts.tablePath} (${opts.tableCount} entries)`);
+    console.log(`  Query cell        : ${fmtCell(v.queryCell, 3)}`);
+    console.log(`  Tolerances        : ${opts.tol}% lengths, ${opts.tolAngle} deg angles`);
+    if (v.total === 0) {
+        console.log('  Matching PDB      : none');
+        console.log('----------------------------------------------');
+        console.log('  Result            : INDETERMINATE');
+        console.log('    No PDB structure matches this cell. (widen --tol / --tol-angle,');
+        console.log('    or rebuild the table with  node scripts/build-pdb-table.js)');
+        console.log('==============================================');
+        return;
+    }
+    console.log(`  Matching PDB      : ${v.total} entr${v.total === 1 ? 'y' : 'ies'}`);
+    console.log(`  PDB space groups  : ${v.sgCounts.map(s => s.hm ? `${s.hm} (No. ${s.sg}) x${s.count}` : `No. ${s.sg} x${s.count}`).join(', ')}`);
+    const shown = v.matches.slice(0, 5);
+    if (shown.length) {
+        console.log(`  Matches           : ${shown.map(m => `${m.id} (No. ${m.sg})`).join(', ')}${v.total > shown.length ? `, +${v.total - shown.length} more` : ''}`);
+    }
+    console.log('----------------------------------------------');
+    const d = opts.determined;
+    console.log(`  Determined SG     : ${d ? `${d.hm} (No. ${d.id})` : `No. ${v.determinedSg}`}`);
+    if (opts.forcedHm) console.log(`  (forced for output: ${opts.forcedHm})`);
+    if (v.verdict === 'verified') {
+        console.log('  Result            : VERIFIED');
+        console.log(`    PDB assigns this cell to space group No. ${v.determinedSg}.`);
+    } else if (v.verdict === 'enantiomorph') {
+        console.log('  Result            : AMBIGUOUS (enantiomorph)');
+        console.log(`    PDB assigns this cell to No. ${v.enantiomorphOf}; Nos. ${v.determinedSg} and ${v.enantiomorphOf} are`);
+        console.log('    an enantiomorphic pair and cannot be told apart from the diffraction');
+        console.log('    pattern alone (only by anomalous scattering).');
+    } else if (v.verdict === 'mismatch') {
+        console.log('  Result            : MISMATCH');
+        console.log(`    PDB structures with this cell are in space group${v.sgNumbers.length === 1 ? '' : 's'} ${v.sgNumbers.join(', ')};`);
+        console.log(`    No. ${v.determinedSg} was determined. Check the indexing / space-group assignment.`);
+    }
+    console.log('==============================================');
+}
+
 async function main() {
     let args;
     try {
@@ -492,6 +554,34 @@ async function main() {
         chiral: args.chiral,
     });
     printAnalysis(result);
+
+    // Validate the determined space group against the offline PDB lookup table.
+    if (result.ok && args.valid) {
+        const tablePath = path.resolve(args.pdbTable || path.join(__dirname, '..', 'data', 'pdb-cells.json'));
+        if (!fs.existsSync(tablePath)) {
+            console.error(`xrdspace: PDB lookup table not found: ${tablePath}`);
+            console.error(`  Build it once with:  node scripts/build-pdb-table.js`);
+            process.exit(1);
+        }
+        const table = loadPdbLookup(tablePath);
+        const determined = result.determined || result.best;
+        if (!determined) {
+            console.error('xrdspace: no space group determined to validate.');
+            process.exit(1);
+        }
+        const v = validateSpaceGroupAgainstPdb(table, result.cell, determined.id, {
+            tolLen: args.tol / 100,
+            tolAng: args.tolAngle,
+        });
+        printPdbValidation(v, {
+            tablePath,
+            tableCount: table.entries.length,
+            tol: args.tol,
+            tolAngle: args.tolAngle,
+            determined,
+            forcedHm: result.forced ? `${result.forced.hm} (No. ${result.forced.id})` : null,
+        });
+    }
 
     // Write the corrected/merged HKL files.
     if (result.ok && result.merge) {
