@@ -8,6 +8,7 @@
 
 import { canonicalRep, isInvariant, phase, parseOperation, directToReciprocal, opsToReciprocalMatrices, det3 } from './op-math.js';
 import { LAUE_BY_SYSTEM, LAUE_CRYSTAL_SYSTEM } from './laue.js';
+import { dSpacing } from './merge.js';
 
 // --- crystal system from unit cell ---
 
@@ -414,25 +415,77 @@ export function laueClassOfSg(sg, laueGroups) {
 
 // --- intensity statistics (centrosymmetry) ---
 
+// Thresholds for the <|E^2 - 1|> score. The theoretical values are ~0.736
+// (acentric) and ~0.968 (centric); the gap keeps mediocre/poorly scaled data
+// indeterminate rather than forcing a wrong call.
+function classifyCentricity(score, n) {
+    return {
+        centric: score >= 0.90,
+        acentric: score <= 0.80,
+        score,
+        n,
+    };
+}
+
 // Wilson-style test using the mean of |E^2 - 1|, where E^2 = I / <I>.
 // Centrosymmetric crystals give <|E^2 - 1|> ~ 0.968, acentric ~ 0.736.
-// Returns { centric, acentric, score }.
-export function estimateCentricity(reflections) {
-    let sum = 0;
-    for (const r of reflections) sum += Math.abs(r.I);
-    const mean = sum / Math.max(1, reflections.length);
-    if (mean <= 0) return { centric: false, acentric: false, score: 0 };
-    let s = 0;
-    for (const r of reflections) {
-        const e2 = Math.abs(r.I) / mean;
-        s += Math.abs(e2 - 1);
+//
+// Intensities are normalized per resolution shell (a Wilson correction). Using
+// a single global mean instead is dominated by the strong low-angle reflections
+// and by the noise-dominated outer shells, and can give unphysical values (> 1).
+// Only positive intensities enter the statistic: negative measurements are
+// unphysical here and would otherwise blow up in the noise shells.
+// Returns { centric, acentric, score, n }.
+export function estimateCentricity(reflections, cell) {
+    const positive = reflections.filter(r => r.I > 0);
+    const data = positive.length ? positive : reflections;
+    if (!data.length) return { centric: false, acentric: false, score: 0, n: 0 };
+
+    // Wilson normalization: bin by 1/d^2 and divide each shell by its mean.
+    if (cell) {
+        const qs = new Array(data.length);
+        let qmin = Infinity, qmax = 0;
+        for (let i = 0; i < data.length; i++) {
+            const d = dSpacing(data[i].h, data[i].k, data[i].l, cell);
+            const q = d > 0 ? 1 / (d * d) : NaN;
+            qs[i] = q;
+            if (Number.isFinite(q)) {
+                if (q < qmin) qmin = q;
+                if (q > qmax) qmax = q;
+            }
+        }
+        if (qmax > qmin) {
+            const NB = 20;
+            const bins = Array.from({ length: NB }, () => []);
+            for (let i = 0; i < data.length; i++) {
+                const q = qs[i];
+                if (!Number.isFinite(q)) continue;
+                let b = Math.floor((q - qmin) / (qmax - qmin) * NB);
+                if (b < 0) b = 0;
+                if (b >= NB) b = NB - 1;
+                bins[b].push(data[i]);
+            }
+            let sum = 0, n = 0;
+            for (const arr of bins) {
+                if (arr.length < 5) continue;
+                let mean = 0;
+                for (const r of arr) mean += r.I;
+                mean /= arr.length;
+                if (mean <= 0) continue;
+                for (const r of arr) { sum += Math.abs(r.I / mean - 1); n++; }
+            }
+            if (n >= 100) return classifyCentricity(sum / n, n);
+        }
     }
-    const score = s / reflections.length;
-    return {
-        centric: score > 0.85,
-        acentric: score < 0.78,
-        score,
-    };
+
+    // Fallback: a single global mean (no cell, or a degenerate cell metric).
+    let s = 0;
+    for (const r of data) s += r.I;
+    const mean = s / data.length;
+    if (mean <= 0) return { centric: false, acentric: false, score: 0, n: data.length };
+    let dev = 0;
+    for (const r of data) dev += Math.abs(r.I / mean - 1);
+    return classifyCentricity(dev / data.length, data.length);
 }
 
 // A space group is chiral (Sohncke) when it contains no operation with a
@@ -511,7 +564,7 @@ export function analyzeSpaceGroup(sgData, reflections, cell, options = {}) {
     // Score candidates by systematic absences. Prefer fewest violations, then
     // the most confirmed absences (most restrictive compatible space group),
     // then the space group whose centrosymmetry matches the intensity data.
-    const centricity = estimateCentricity(reflections);
+    const centricity = estimateCentricity(reflections, cell);
     const useCentricity = centricity.centric || centricity.acentric;
     for (const c of candidates) {
         // Score every setting of this space group number (e.g. P 1 21/c 1 vs

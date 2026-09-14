@@ -36,7 +36,7 @@ SHELXD / SHELXT / SHELXS.
 | 5. Space group | All candidates of the crystal system + centering are scored by their **systematic-absence conditions** (screw axes and glide planes, op by op, including absences that are simply missing from the data). Ranking: fewest violations → most confirmed absences → Laue-class match → Wilson centricity match. For macromolecular cells (volume > 64 000 Å³, ≈ 40×40×40) candidates are restricted to the **65 chiral (Sohncke) space groups** — see below |
 | 6. Centricity | Wilson-style test on \|E²−1\| (centric ≈ 0.968, acentric ≈ 0.736) used as a tie-breaker |
 | 7. Merge | Reflections merged under the chosen Laue class with 1/σ² weights; merged σ combines the weighted-mean error with the sample scatter |
-| 8. Output | Merged **SHELX** HKL, merged **XDS_ASCII** HKL, a **SHELX `.ins`** instruction file (cell, LATT, SYMM, SFAC/UNIT), and a full merging report (R(merge), R(meas), R(pim), completeness, multiplicity, mean I/σ) |
+| 8. Output | Merged **SHELX** HKL, merged **XDS_ASCII** HKL, **unmerged XDS_ASCII**, a **SHELX `.ins`** instruction file, and a consolidated `xrdspace.log` report: merging statistics (incl. resolution/completeness at I/σ = 1 and CC(1/2) = 0.30), a per-resolution-shell quality table, and artifact flags (outliers / ice rings / anisotropy) |
 | 9. Cell search | Search the **Crystallography Open Database (COD)** and the **RCSB Protein Data Bank (PDB)** for structures whose unit cell matches a query cell. Matching is done in the **Niggli-reduced cell**, so different settings of the same lattice (axis permutations, unique-axis choices, obtuse/acute angle conventions) are recognised automatically and ranked by match score |
 | 10. PDB validation | `--valid` checks the determined space group against an **offline PDB unit-cell/space-group lookup table** (`data/pdb-cells.json`, built once from RCSB). No network access at validation time: reports **VERIFIED / MISMATCH / AMBIGUOUS (enantiomorph) / INDETERMINATE**, with the space groups PDB assigns to matching cells |
 
@@ -76,8 +76,9 @@ node src/xrdspace.js hklin data.hkl hklout merged.hkl spacegroup "P 21/c"
 |---|---|
 | `--hklin <file>` | Input HKL file (XDS_ASCII, SHELX five-column, or COD `.hkl`) |
 | `--hklout <file>` | Output merged HKL file in **SHELX format** (default: `<input>_merged.hkl`) |
-| `--xdsout <file>` | Output merged HKL file in **XDS_ASCII format** (default: `<input>_XDS.HKL`) |
-| `--log <file>` | Also write all console output to a log file (truncated at start of run) |
+| `--xdsout <file>` | Output merged HKL file in **XDS_ASCII format** (default: `<input>_xds.hkl`) |
+| `--unmergedout <file>` | Output **unmerged** HKL file in **XDS_ASCII format** (`MERGE=FALSE`), keeping every observation (default: `<input>_unmerged.hkl`) |
+| `--log <file>` | Path for the consolidated, formatted report. The report is **always** written; default `xrdspace.log` next to the input file |
 | `--spacegroup <sg>` | **Force** a specific space group — number (`14`) or Hermann–Mauguin symbol (`"P 21/c"`, `"P-1"`, `"P 21 21 21"`). Used for merging/output and checked for consistency with the data |
 | `--laue <group>` | **Force** a Laue class for merging (e.g. `-1`, `2/m`, `mmm`, `4/mmm`, `-3m`, `6/mmm`, `m-3m`) |
 | `--cell "a b c alpha beta gamma"` | Unit cell, used when the file does not carry cell parameters (skips the interactive prompt) |
@@ -103,59 +104,114 @@ xrdspace **prompts interactively** for `a b c alpha beta gamma`.
 ### Example
 
 ```sh
-node src/xrdspace.js --hklin data_XDS.HKL \
+node src/xrdspace.js --hklin data.hkl \
     --spacegroup "P 21/c" \
     --sfac "C12 H16 N2 O4" \
-    --resolution 50 1.2 \
-    --log run.log
+    --resolution 50 1.2
 ```
 
 ### Example output
 
 ```
-==============================================
-  xrdspace  —  space-group determination
-==============================================
+==============================================================================
+  xrdspace  —  space-group determination and reflection merging
+==============================================================================
+
+  Input file         : data.hkl
   Format             : xds_ascii
-  Unit cell          : 10.5 10.5 14.0  90 90 90
-  Wavelength         : 0.71073
+  Wavelength         : 0.71073 A
   Reflections        : 123456
+
+------------------------------------------------------------------------------
+  UNIT CELL
+------------------------------------------------------------------------------
+           a         b         c     alpha      beta     gamma
+     10.500    10.500    14.000    90.000    90.000    90.000
+  Volume             : 1544 A^3
   Crystal system     : tetragonal
   Lattice centering  : P
-  Centrosymmetric    : centric  (<|E^2-1|> = 0.971)
+
+------------------------------------------------------------------------------
+  SPACE-GROUP DETERMINATION
+------------------------------------------------------------------------------
+  Best space group   : P 42/m  (No. 84)
   Laue class         : 4/mmm   R(sym) = 1.82 %
-----------------------------------------------
+  Centrosymmetric    : centric   (<|E^2-1|> = 0.971)
+  Data consistency   : consistent with data
+
   R(sym) by Laue class:
-    -1      order  2  R(sym) = 3.41 %
-    2/m     order  4  R(sym) = 3.38 %
-    mmm     order  8  R(sym) = 2.95 %
-    4/m     order  8  R(sym) = 2.10 %
-    4/mmm   order 16  R(sym) = 1.82 %  <--
+    -1      order  2   R(sym) =   3.41 %
+    2/m     order  4   R(sym) =   3.38 %
+    mmm     order  8   R(sym) =   2.95 %
+    4/m     order  8   R(sym) =   2.10 %
+    4/mmm   order 16   R(sym) =   1.82 %  <-- chosen
     ...
-----------------------------------------------
+
   Space-group candidates (systematic absences):
-      87  I 4/m              violations    0
-      88  I 41/a             violations    0
-      84  P 42/m             violations    0  <-- best
+    No.  HM                          violations
+     88  I 41/a                             0
+     84  P 42/m                             0  <-- best
+
+------------------------------------------------------------------------------
+  MERGING STATISTICS
+------------------------------------------------------------------------------
+  Resolution range    : 50.00 - 1.20 A
+  Resolution (I/σ=1)  : 1.35 A
+  Resolution (CC1/2)  : 1.30 A   (CC1/2 = 0.30)
+  Observations        : 123456
+  Unique reflections  : 7712
+  Mean multiplicity   : 16.0
+  Completeness        : 98.7 %
+  Completeness (I/σ=1): 99.5 %
+  Completeness (CC1/2): 99.0 %
+  R(merge)            : 1.82 %
+  R(meas)             : 2.35 %
+  R(pim)              : 0.46 %
+  Mean I/sigma(I)     : 14.8   (to CC1/2 = 0.30)
+
+------------------------------------------------------------------------------
+  RESOLUTION SHELLS
+------------------------------------------------------------------------------
+  d range (A)      #obs   #uniq   Compl   Mult   Rmerge    Rmeas    Rpim   <I/σ>  CC(1/2)   %neg
+  50.00-3.50      32000    4200   99.8%    7.6     3.1%     3.6%     1.2%   22.1    0.999     1%
+  3.50-2.50       38000    5200   99.5%    7.3     8.4%     9.8%     3.2%   11.5    0.995     3%
+  2.50-2.00       28000    4100   98.9%    6.8    24.6%    28.5%     9.1%    5.2    0.982     8%
+  2.00-1.60       18000    3000   97.2%    6.0    78.3%    90.6%    28.4%    2.3    0.921    18%
+  1.60-1.20       12000    2500   94.1%    4.8   210.5%   243.1%    76.2%    1.1    0.702    33%
   ...
-  Best space group  : P 42/m  (No. 84)
-  Data consistency  : consistent with data
-----------------------------------------------
-  Merging statistics:
-    Resolution range : 50.00 - 1.20 A
-    Observations     : 123456
-    Unique           : 7712
-    Multiplicity     : 16.0
-    Completeness     : 98.7 %
-    R(merge)         : 1.82 %
-    R(pim)           : 0.46 %
-    Mean I/sigma(I)  : 12.3
-==============================================
-Merged HKL written to:
+
+------------------------------------------------------------------------------
+  QUALITY FLAGS / ARTIFACTS
+------------------------------------------------------------------------------
+  Outliers |ΔI|/σ>10  : 63 / 123456 (0.05%)
+     h    k    l      d(A)         I    sigma   |ΔI|/σ     n
+       4    2   -9     3.12       88.40     3.10     48.7      6
+      ...
+  Ice-ring scan (mean |I| in a 0.05 A band vs local background):
+    none detected
+    3.90 A   n=  1905   ratio 1.08
+    3.67 A   n=  2349   ratio 1.16
+    ...
+  Anisotropy (resolution at I/σ=2 by reciprocal axis):
+    a*   1.55 A   (n=41234)
+    b*   1.62 A   (n=39001)
+    c*   1.58 A   (n=43022)
+    max/min = 1.05   (isotropic)
+
+------------------------------------------------------------------------------
+  OUTPUT FILES
+------------------------------------------------------------------------------
   data_merged.hkl  (SHELX format, ready for SHELXD/SHELXT)
-  data_XDS.HKL     (merged XDS_ASCII)
+  data_xds.hkl  (merged XDS_ASCII)
+  data_unmerged.hkl  (UNMERGED XDS_ASCII, all observations)
   data_merged.ins  (SHELX instructions, matching cell/space group)
+  xrdspace.log  (this report)
+
+==============================================================================
 ```
+
+The same consolidated report is written to **`xrdspace.log`** (next to the input
+file) on every analysis run; use `--log <file>` to choose another path.
 
 ### Unit-cell database search (COD + PDB)
 
@@ -285,8 +341,10 @@ candidates to the Sohncke groups when the **unit-cell volume exceeds
 | File | Format | Use |
 |---|---|---|
 | `<input>_merged.hkl` | SHELX five-column `H K L I SIG(I)` | Feed directly to **SHELXD / SHELXT / SHELXS** |
-| `<input>_XDS.HKL` | Merged XDS_ASCII (`MERGE=TRUE`, `FRIEDELS_LAW=TRUE`) with cell, space group, wavelength and resolution-range header | Re-integration / further processing |
+| `<input>_xds.hkl` | Merged XDS_ASCII (`MERGE=TRUE`, `FRIEDEL'S_LAW=TRUE`) with cell, space group, wavelength and resolution-range header | Re-integration / further processing |
+| `<input>_unmerged.hkl` | **Unmerged** XDS_ASCII (`MERGE=FALSE`, labelled `UNMERGED (all observations)`) with cell, space group, wavelength and resolution-range header. XDS_ASCII input records are copied verbatim (auxiliary `XD`, `YD`, `ZD`, `RLP`, `PEAK`, `CORR`, `PSI` columns preserved); other formats are written as 12-column records | Programs that prefer redundancy — e.g. **Phenix** (`phenix.refine` / `phenix.xtriage`) and anomalous-data work. **MOLREP** usually takes the merged file |
 | `<input>_merged.ins` | SHELX instruction file: `TITL`, `CELL`, `LATT` (sign encodes centrosymmetry), `SYMM` (generating operations, one per inversion pair for centric groups), `SFAC`, `UNIT`, `HKLF 4`, `TREF 50` | Structure solution with SHELXT |
+| `xrdspace.log` | Consolidated aligned text report: input/cell, space-group determination, Laue table, candidates, merging statistics, optional PDB validation, and the output-file list (no duplicated blocks) | Archive the analysis; default name, change with `--log <file>` |
 
 ### Model transform between space groups (`sg-model.js`)
 
@@ -336,6 +394,7 @@ Runs the full analysis on HKL file **text** and returns a result object.
 | `sfac` | `string[]` | Element symbols for the `.ins` `SFAC` line |
 | `unit` | `number[]` | Counts per element for the `.ins` `UNIT` line |
 | `chiral` | `boolean` | Restrict candidates to the 65 chiral (Sohncke) space groups. Default: `true` for cells with volume > 64 000 Å³ (≈ 40×40×40), `false` otherwise |
+| `quality` | `boolean` | Also compute the per-resolution-shell table and the artifact flags (default `false`; the CLI always enables it) |
 
 **Return value**
 
@@ -364,11 +423,18 @@ Runs the full analysis on HKL file **text** and returns a result object.
     nUnique, nObs,
     shelxHkl,            // merged SHELX five-column text
     xdsAscii,            // merged XDS_ASCII text
+    unmergedXdsAscii,    // UNMERGED XDS_ASCII text (all observations, MERGE=FALSE)
+    inputWasMerged,      // true when the input declared MERGE=TRUE
     shelxIns,            // SHELX .ins text
-    statistics: { dmin, dmax, nObs, nUnique, meanMultiplicity, completeness,
+    statistics: { dmin, dmax, dIsig1, nUniqueIsig1, completenessIsig1,
+                  dCC30, nUniqueCC30, completenessCC30,
+                  nObs, nUnique, meanMultiplicity, completeness,
                   rMerge, rMeas, rPim, meanIsig, meanI },
     report,              // human-readable merging report
-    consistency: { violations, confirmedOps, confirmedAbsences }
+    consistency: { violations, confirmedOps, confirmedAbsences },
+    shells,              // (quality) [{ dLo, dHi, nObs, nUnique, completeness,
+                         //   multiplicity, rMerge, rMeas, rPim, meanIsig, ccHalf, negFrac }]
+    artifacts,           // (quality) { outliers, iceRings, anisotropy, anisoRatio, anisotropic }
   }
 }
 ```
@@ -444,12 +510,26 @@ the special code `'NO_CELL'` (the file has no unit cell — supply `options.cell
    fallback to the full pool if no chiral group is consistent with the data.
 5. **Centricity** — the Wilson statistic <|E²−1|> (E² = I/⟨I⟩) distinguishes
    centric (≈ 0.968) from acentric (≈ 0.736) data and breaks remaining ties.
+   Intensities are normalized per resolution shell (a Wilson correction) and
+   negative measurements are ignored; the intermediate band (0.80–0.90) is
+   reported as **indeterminate**.
 6. **Merging** — reflections are grouped into Laue orbits (canonical
    representative = lexicographically smallest image), merged with 1/σ²
    weights; the merged σ adds the standard error of the mean so inconsistent
    observations inflate the error. Completeness is computed against the exact
    count of unique reflections in the resolution shell (analytic per-(h,k)
-   l-bounds, no full-cube scan).
+   l-bounds, no full-cube scan), **corrected for the Bravais lattice centering**
+   (P/A/B/C/I/F/R). The report also gives two **meaningful resolution limits** —
+   **I/σ = 1** and **CC(1/2) = 0.30** — and the **completeness within each**, so
+   the noisy outer shells do not drag the headline completeness down (a 2I/σ
+   limit is almost trivially satisfied and is not reported). **Mean I/σ** is
+   likewise reported only within the CC(1/2) = 0.30 limit.
+7. **Diagnostics** — a per-resolution-shell quality table (#obs, #unique,
+   completeness, multiplicity, R(merge)/R(meas)/R(pim), <I/σ>, CC(1/2), %
+   negative) and artifact flags: discordant ("alien") measurements relative to
+   the orbit median, a scan for hexagonal-ice rings (3.90/3.67/3.44/2.67/2.25 Å),
+   and an anisotropy check comparing the resolution at I/σ = 2 along a*, b* and
+   c*.
 
 ---
 

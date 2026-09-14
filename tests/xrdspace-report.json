@@ -1,50 +1,50 @@
 {
   "total": 2000,
-  "pass": 877,
-  "near": 1039,
+  "pass": 928,
+  "near": 988,
   "fail": 46,
   "skip": 38,
   "rate": 97.7,
   "bySystem": {
     "triclinic": {
       "total": 40,
-      "pass": 21,
-      "near": 19,
+      "pass": 26,
+      "near": 14,
       "fail": 0,
       "skip": 0
     },
     "monoclinic": {
       "total": 202,
-      "pass": 102,
-      "near": 96,
+      "pass": 114,
+      "near": 84,
       "fail": 3,
       "skip": 1
     },
     "orthorhombic": {
       "total": 625,
-      "pass": 347,
-      "near": 260,
+      "pass": 352,
+      "near": 255,
       "fail": 7,
       "skip": 11
     },
     "tetragonal": {
       "total": 451,
-      "pass": 168,
-      "near": 252,
+      "pass": 169,
+      "near": 251,
       "fail": 19,
       "skip": 12
     },
     "trigonal": {
       "total": 296,
-      "pass": 43,
-      "near": 248,
+      "pass": 56,
+      "near": 235,
       "fail": 4,
       "skip": 1
     },
     "hexagonal": {
       "total": 186,
-      "pass": 85,
-      "near": 89,
+      "pass": 100,
+      "near": 74,
       "fail": 1,
       "skip": 11
     },

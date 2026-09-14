@@ -39,6 +39,15 @@ function parseXdsHeader(lines) {
         const key = line.slice(1, eq).trim();
         const val = line.slice(eq + 1).trim();
         header[key] = val;
+        // The FORMAT line packs the flags after the first key, e.g.
+        // "!FORMAT=XDS_ASCII    MERGE=FALSE    FRIEDEL'S_LAW=TRUE", so extract
+        // them explicitly or they would be swallowed into the FORMAT value.
+        if (key === 'FORMAT') {
+            const m = val.match(/\bMERGE\s*=\s*(\w+)/i);
+            if (m) header.MERGE = m[1];
+            const f = val.match(/FRIEDEL'?S_LAW\s*=\s*(\w+)/i);
+            if (f) header["FRIEDEL'S_LAW"] = f[1];
+        }
     }
     return header;
 }
@@ -177,7 +186,7 @@ export function detectFormat(text) {
  *   format, title,
  *   cell: { a, b, c, alpha, beta, gamma } | null,
  *   spaceGroupNumber, spaceGroupName, wavelength, merge: bool, friedelsLaw,
- *   reflections: [{ h, k, l, I, sig }]
+ *   reflections: [{ h, k, l, I, sig, raw? }]  // raw = original XDS_ASCII line
  * }
  */
 export function parseHkl(text) {
@@ -211,14 +220,16 @@ export function parseHkl(text) {
         const wl = header['X-RAY_WAVELENGTH'] ?? header.XRAY_WAVELENGTH;
         if (wl) wavelength = parseFloat(wl);
         merge = (header.MERGE || '').toUpperCase() === 'TRUE';
-        friedelsLaw = (header.FRIEDELS_LAW || '').toUpperCase() === 'TRUE';
+        friedelsLaw = ((header["FRIEDEL'S_LAW"] ?? header.FRIEDELS_LAW) || '').toUpperCase() === 'TRUE';
 
         for (const raw of lines) {
             const line = raw.trim();
             if (!line || line.startsWith('!')) continue;
             const tokens = tokenize(line);
             const r = parseXdsLine(tokens);
-            if (r) reflections.push(r);
+            // Keep the original data record verbatim so an unmerged output can
+            // preserve the auxiliary XDS columns (XD, YD, ZD, RLP, PEAK, CORR, PSI).
+            if (r) { r.raw = line; reflections.push(r); }
         }
     } else if (format === HKL_FORMAT.SHELX) {
         for (const raw of lines) {
