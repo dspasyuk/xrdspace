@@ -223,22 +223,92 @@ export function detectCentering(reflections, sigThreshold = 5) {
 
 // --- systematic absences ---
 
+function isIdentityRotation(R) {
+    for (let i = 0; i < 3; i++) {
+        for (let j = 0; j < 3; j++) {
+            if (Math.abs(R[i][j] - (i === j ? 1 : 0)) > 1e-9) return false;
+        }
+    }
+    return true;
+}
+
+// Centering (Bravais) translations of a space group, read from its pure
+// translation operations (R = identity with a fractional translation). The
+// identity (0,0,0) is always included.
+function centeringVectors(sg) {
+    const vecs = [[0, 0, 0]];
+    for (const op of sg.s) {
+        const parsed = parseOperation(op);
+        if (!parsed || !isIdentityRotation(parsed.R)) continue;
+        if (parsed.t.some(v => Math.abs(v - Math.round(v)) > 1e-9)) vecs.push(parsed.t);
+    }
+    return vecs;
+}
+
+// Wrap a fractional coordinate into (-0.5, 0.5].
+function wrapFrac(x) {
+    let y = x - Math.floor(x);
+    if (y > 0.5) y -= 1;
+    return y;
+}
+
+// Denominator (order) of a fractional translation along an axis, e.g. 1/3 and
+// 2/3 both give 3. Returns 0 when no small denominator fits.
+function axisDenominator(x, max = 12, tol = 1e-6) {
+    for (let q = 1; q <= max; q++) {
+        if (Math.abs(x * q - Math.round(x * q)) < tol) return q;
+    }
+    return 0;
+}
+
 // Build the list of "conditional" ops for a space group: ops (R|t) with a
 // non-lattice translation, which impose reflection conditions.
+//
+// The translation is first reduced modulo the centering lattice, so that
+// centering-composed operations (e.g. R-centred groups in the hexagonal
+// setting) do not masquerade as screw axes / glides. Equivalent screw-axis
+// conditions that share an invariant axis and order are then deduplicated,
+// otherwise a 6-fold group would be credited twice for the same condition
+// carried by its 3- and 6-fold components.
 function conditionalOps(sg) {
+    const cvecs = centeringVectors(sg);
     const out = [];
     for (const op of sg.s) {
         const parsed = parseOperation(op);
         if (!parsed) continue;
-        const isLattice = parsed.t.every(v => Math.abs(v - Math.round(v)) < 1e-9);
-        if (isLattice) continue; // centering translations handled separately
+        let best = null;
+        let bestNorm = Infinity;
+        for (const c of cvecs) {
+            const r = parsed.t.map((v, i) => wrapFrac(v - c[i]));
+            const norm = r.reduce((s, v) => s + Math.abs(v), 0);
+            if (norm < bestNorm) { bestNorm = norm; best = r; }
+        }
+        if (!best) continue;
+        if (best.every(v => Math.abs(v) < 1e-6)) continue; // pure rotation/reflection
         out.push({
             M: directToReciprocal(parsed.R),
-            t: parsed.t,
+            t: best,
             opString: op,
         });
     }
-    return out;
+
+    // Deduplicate identical axial (screw) conditions.
+    const seen = new Set();
+    const deduped = [];
+    for (const o of out) {
+        const axes = invariantAxes(o.M);
+        let key = null;
+        if (axes.length === 1) {
+            const a = axes[0];
+            key = `ax${a}q${axisDenominator(o.t[a])}`;
+        }
+        if (key !== null) {
+            if (seen.has(key)) continue;
+            seen.add(key);
+        }
+        deduped.push(o);
+    }
+    return deduped;
 }
 
 // Which coordinate axes (0=h,1=k,2=l) are invariant under reciprocal matrix M
@@ -318,6 +388,10 @@ export function scoreSpaceGroup(sg, reflections, sigThreshold = 5, maxReflection
             const a1 = axes[0], a2 = axes[1];
             const b1 = [[hmin, hmax], [kmin, kmax], [lmin, lmax]][a1];
             const b2 = [[hmin, hmax], [kmin, kmax], [lmin, lmax]][a2];
+            const span = (b1[1] - b1[0] + 1) * (b2[1] - b2[0] + 1);
+            // Guard against pathological index ranges (e.g. a powder pattern
+            // parsed as reflections) turning this into an O(N^2) blow-up.
+            if (span > 2000000) continue;
             for (let v1 = b1[0]; v1 <= b1[1]; v1++) {
                 for (let v2 = b2[0]; v2 <= b2[1]; v2++) {
                     if (v1 === 0 && v2 === 0) continue;
@@ -567,10 +641,17 @@ export function analyzeSpaceGroup(sgData, reflections, cell, options = {}) {
     const centricity = estimateCentricity(reflections, cell);
     const useCentricity = centricity.centric || centricity.acentric;
     for (const c of candidates) {
-        // Score every setting of this space group number (e.g. P 1 21/c 1 vs
-        // P 1 21/n 1 vs P 1 21/a 1 are all No. 14) and keep the best.
+        // Score every setting of this space group number that uses the detected
+        // Bravais centering (e.g. P 1 21/c 1 vs P 1 21/n 1) and keep the best.
+        // Settings with a different centering (e.g. I 1 2/a 1 for C 1 2/c 1)
+        // describe a different lattice and must not be allowed to rescue a
+        // candidate by fitting a centering the data does not have.
         const settings = [];
-        for (const g of sgData) if (g.id === c.id) settings.push(g);
+        for (const g of sgData) {
+            if (g.id !== c.id) continue;
+            if ((g.hm || ' ')[0].toUpperCase() !== centering) continue;
+            settings.push(g);
+        }
         let bestSc = null;
         for (const s of settings.length ? settings : [c]) {
             const sc = scoreSpaceGroup(s, reflections, options.sigThreshold || 5);

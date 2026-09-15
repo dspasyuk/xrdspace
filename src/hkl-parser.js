@@ -164,17 +164,22 @@ function parseCodRefln(lines) {
 export function detectFormat(text) {
     const lines = text.split(/\r?\n/);
     let hasCodRefln = false;
+    let hasCifTag = false;
     let hasXds = false;
     let hasShelx = false;
     for (const raw of lines) {
         const line = raw.trim();
         if (!line || line.startsWith('#')) continue;
         if (line.startsWith('!')) hasXds = true;
+        if (line.startsWith('_')) hasCifTag = true;
         if (line.startsWith('_refln_')) hasCodRefln = true;
         const tokens = tokenize(line);
         if (tokens.length >= 5 && /^-?\d/.test(tokens[0])) hasShelx = true;
     }
     if (hasCodRefln) return HKL_FORMAT.COD;
+    // A CIF that has no single-crystal `_refln_` loop (e.g. a powder `_pd_`
+    // pattern whose numeric rows would otherwise look SHELX-like) is unusable.
+    if (hasCifTag) return HKL_FORMAT.UNKNOWN;
     if (hasXds) return HKL_FORMAT.XDS_ASCII;
     if (hasShelx) return HKL_FORMAT.SHELX;
     return HKL_FORMAT.UNKNOWN;

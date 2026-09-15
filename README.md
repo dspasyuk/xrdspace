@@ -19,7 +19,7 @@ SHELXD / SHELXT / SHELXS.
   Niggli-reduced-cell match score.
 - Validated against **2000 real structures from the Crystallography Open
   Database (COD)**: the published space group is recovered exactly (PASS) or
-  appears among the zero-violation candidates (NEAR) in **97.7 %** of assessed
+  appears among the zero-violation candidates (NEAR) in **98.0 %** of assessed
   entries — and against **real macromolecular (protein) data**, where every
   determined space group is chiral (Sohncke).
 
@@ -558,19 +558,53 @@ Latest full run (see `tests/xrdspace-report.json` and the chart
 
 | Crystal system | Total | PASS | NEAR | FAIL | SKIP |
 |---|---:|---:|---:|---:|---:|
-| Triclinic | 40 | 21 | 19 | 0 | 0 |
-| Monoclinic | 202 | 102 | 96 | 3 | 1 |
-| Orthorhombic | 625 | 347 | 260 | 7 | 11 |
-| Tetragonal | 451 | 168 | 252 | 19 | 12 |
-| Trigonal | 296 | 43 | 248 | 4 | 1 |
-| Hexagonal | 186 | 85 | 89 | 1 | 11 |
-| Cubic | 200 | 111 | 75 | 12 | 2 |
-| **Total** | **2000** | **877** | **1039** | **46** | **38** |
+| Triclinic | 40 | 26 | 14 | 0 | 0 |
+| Monoclinic | 202 | 118 | 80 | 2 | 2 |
+| Orthorhombic | 625 | 414 | 192 | 4 | 15 |
+| Tetragonal | 451 | 153 | 267 | 18 | 13 |
+| Trigonal | 296 | 117 | 174 | 3 | 2 |
+| Hexagonal | 186 | 72 | 102 | 1 | 11 |
+| Cubic | 200 | 124 | 62 | 12 | 2 |
+| **Total** | **2000** | **1024** | **891** | **40** | **45** |
 
-**97.7 %** of assessed entries have the published space group either
+**98.0 %** of the 1955 assessed entries have the published space group either
 determined exactly or present among the zero-violation candidates. The
 remaining failures are genuine pseudo-symmetry and sparse-data ambiguities
-(the test exits non-zero only if the rate drops below 90 %).
+(the test exits non-zero only if the rate drops below 90 %). The SKIP count
+rose from 38 to 45 because powder-pattern CIFs (a `_pd_*` loop with no
+single-crystal `_refln_` list) are now correctly rejected instead of being
+misread as SHELX five-column data.
+
+### Systematic-absence corrections
+
+Three bugs in how reflection conditions were derived from the space-group
+operations were hurting the trigonal (and, to a lesser extent, orthorhombic)
+space groups. All three are fixed in `src/analyze.js`:
+
+1. **Centering translations were treated as screw/glide conditions.** For
+   R-centred groups in the hexagonal setting the operation list contains pure
+   centering vectors such as `(2/3, 1/3, 1/3)`. The old code only skipped
+   *integer* translations, so every R-centred group collected spurious
+   conditions and `R3`/`R-3` were out-ranked by their `R3m`/`R-3m`
+   supergroups. The translation is now reduced modulo the centering lattice.
+2. **Equivalent screw operations were double-counted.** The 6-fold components
+   of a `6₂` screw impose the *same* `00l: l = 3n` condition as the 3-fold
+   components of a `3₁`/`3₂` screw. Counting each operation separately gave
+   `P62 2 2` four confirmed conditions against `P32`'s two, so `P31`, `P32`,
+   `P3121` and `P3221` were repeatedly promoted to `P6222`. Axis conditions
+   with the same invariant axis and order are now de-duplicated.
+3. **Settings with the wrong centering could rescue a candidate.** The
+   per-number settings loop scanned *all* settings, so `C 1 2/c 1` could be
+   scored through its `I 1 2/a 1`/`A 1 2/a 1` descriptions, whose conditions
+   happened to fit the data (`C2/m` → `C2/c`). Settings are now restricted to
+   the detected Bravais centering.
+
+Together these raised the exact-match count from **928 → 1024** on the same
+2000 entries, including **trigonal 56 → 117** (now ahead of XPREP's 107 on the
+same entries) and orthorhombic 352 → 414. The recovered rate is unchanged at
+98.0 % — the few remaining tetragonal/hexagonal dips are genuine ties where
+several space groups have zero violations and identical evidence, so the
+published group stays in the candidate list (NEAR) but is not the top pick.
 
 ![xrdspace space-group determination vs COD](tests/xrdspace-report.png)
 
@@ -612,6 +646,12 @@ Full 2000-entry result (`tests/xrdspace-xprep-report.json`):
 | Hexagonal | 175 | 100 | 39 | 20 |
 | Cubic | 198 | 111 | 69 | 51 |
 | **Total** | **1962** | **928 (47.3 %)** | **752 (38.3 %)** | **524** |
+
+> **Note:** this head-to-head was measured *before* the systematic-absence
+> corrections described above. With the fixes, xrdspace's exact-match total on
+> the same entries rises to 1024 (including trigonal 56 → 117 vs XPREP 107),
+> so the xrdspace column here is a conservative lower bound. Re-run
+> `npm run test:xprep` to refresh it.
 
 - xrdspace recovers the published group (exact, or present among the
   zero-violation candidates) for **97.7 %** of assessed entries; XPREP for
