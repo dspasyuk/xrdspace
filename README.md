@@ -606,7 +606,7 @@ same entries) and orthorhombic 352 → 414. The recovered rate is unchanged at
 several space groups have zero violations and identical evidence, so the
 published group stays in the candidate list (NEAR) but is not the top pick.
 
-![xrdspace space-group determination vs COD](tests/xrdspace-report.png?v=2)
+![xrdspace space-group determination vs COD](tests/xrdspace-report.png?v=3)
 
 ---
 
