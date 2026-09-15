@@ -2,6 +2,8 @@ node_modules/
 HKLs/
 mx/
 tests/xrdspace-mx-report.json
+tests/xrdspace-xprep-report.json
+tests/xprep-work/
 data/
 *.log
 .DS_Store

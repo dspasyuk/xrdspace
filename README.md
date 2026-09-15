@@ -576,6 +576,58 @@ remaining failures are genuine pseudo-symmetry and sparse-data ambiguities
 
 ---
 
+## Comparison with Bruker XPREP
+
+`tests/xrdspace-xprep.js` runs the same 2000 cached COD datasets through both
+**xrdspace** and **Bruker XPREP** and compares their space-group determination
+head to head. For each entry the harness:
+
+1. reads the cached `HKLs/cod/<id>.hkl`,
+2. writes a minimal SHELX `.fcf` (HKLF list code 3) in `tests/xprep-work/`,
+3. drives XPREP headlessly with `scripts/xprep-run.py` (pexpect), navigating
+   the interactive menus to the space-group determination and reading the
+   option XPREP chooses from its `.prp` log,
+4. runs `analyzeHkl()` on exactly the same reflections and unit cell,
+5. compares both with each other and with the published COD space group.
+
+Requires the XPREP binary (`XPREP_BIN`, default
+`../xdsgo/executables/xprep`) and `python3` + `pexpect`.
+
+```sh
+npm run test:xprep                       # all 2000 entries
+node tests/xrdspace-xprep.js --limit 50  # first N
+node tests/xrdspace-xprep.js --id 1501632
+node tests/xrdspace-xprep.js --sg 14
+```
+
+Full 2000-entry result (`tests/xrdspace-xprep-report.json`):
+
+| Crystal system | Assessed | xrdspace PASS | XPREP PASS | agree |
+|---|---:|---:|---:|---:|
+| Triclinic | 40 | 26 | 27 | 39 |
+| Monoclinic | 201 | 114 | 124 | 103 |
+| Orthorhombic | 614 | 352 | 251 | 227 |
+| Tetragonal | 439 | 169 | 135 | 32 |
+| Trigonal | 295 | 56 | 107 | 52 |
+| Hexagonal | 175 | 100 | 39 | 20 |
+| Cubic | 198 | 111 | 69 | 51 |
+| **Total** | **1962** | **928 (47.3 %)** | **752 (38.3 %)** | **524** |
+
+- xrdspace recovers the published group (exact, or present among the
+  zero-violation candidates) for **97.7 %** of assessed entries; XPREP for
+  **94.0 %** of entries whose space group it was able to determine.
+- Head-to-head on exact matches: **xrdspace 542**, **XPREP 366**,
+  both correct 386; the two programs agree on the space group for 524 entries.
+- XPREP's default choice is the lowest-CFOM option, which on sparse or
+  pseudo-symmetric data often lands on a subgroup or supergroup (e.g. `P2221`
+  vs `Pbam`, `I4/mmm` vs `I-42m`). When the tools disagree, the published
+  group is usually among the candidates of the "wrong" program.
+- 38 entries produced no XPREP answer through this harness (28 driver
+  timeouts on very large or slow inputs, 10 with no space-group table, e.g.
+  XPREP `F-superlattice` warnings).
+
+---
+
 ## Validation against macromolecular (MX) data
 
 `tests/xrdspace-mx.js` validates against **real protein diffraction data** —
@@ -630,11 +682,13 @@ xrdspace/
 │   │                      #   Niggli-reduced cell, validate space group (--valid)
 │   └── space-groups.js    # dictionary of all 230 space groups (all settings)
 ├── scripts/
-│   └── build-pdb-table.js # download PDB cell+space-group data from RCSB and
-│                          #   write data/pdb-cells.json (for --valid)
+│   ├── build-pdb-table.js # download PDB cell+space-group data from RCSB and
+│   │                      #   write data/pdb-cells.json (for --valid)
+│   └── xprep-run.py       # pexpect driver: run XPREP headlessly, read its .prp
 ├── tests/
 │   ├── xrdspace-cod.js    # COD validation harness (2000 entries)
 │   ├── cod-picks.json     # the 2000 COD entries (id, cell, published SG)
+│   ├── xrdspace-xprep.js  # head-to-head xrdspace vs Bruker XPREP comparison
 │   ├── xrdspace-mx.js     # macromolecular (MX) validation harness
 │   ├── xrdspace-cellsearch.js  # offline tests of Niggli reduction / similarity
 │   ├── xrdspace-pdbvalid.js    # offline tests of the PDB lookup (--valid)
