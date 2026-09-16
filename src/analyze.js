@@ -8,7 +8,7 @@
 
 import { canonicalRep, isInvariant, phase, parseOperation, directToReciprocal, opsToReciprocalMatrices, det3 } from './op-math.js';
 import { LAUE_BY_SYSTEM, LAUE_CRYSTAL_SYSTEM } from './laue.js';
-import { dSpacing } from './merge.js';
+import { dSpacing, mergeReflections } from './merge.js';
 
 // --- crystal system from unit cell ---
 
@@ -334,9 +334,18 @@ export function scoreSpaceGroup(sg, reflections, sigThreshold = 5, maxReflection
         return { violations: 0, confirmedOps: 0, confirmedAbsences: 0, nStrong: 0 };
     }
     const weakThreshold = 3;
+    // A systematic-absence condition is genuinely violated only when the
+    // forbidden reflections are, on average, as strong as the allowed ones.
+    // Comparing the mean intensity of the two sets (rather than counting
+    // individual strong forbidden reflections) makes the test robust to a
+    // single strong outlier among otherwise-absent forbidden reflections,
+    // which is common in real data and would otherwise reject the correct
+    // space group. A true violation has many strong forbidden reflections
+    // (ratio ~ 1); a true absence has them at background level (ratio ~ 0.01).
+    const ratioThreshold = 0.02;
     let nStrong = 0;
     const opResults = [];
-    for (let i = 0; i < conds.length; i++) opResults.push({ violations: 0, weakAbsent: 0, allowed: 0, checked: 0 });
+    for (let i = 0; i < conds.length; i++) opResults.push({ allowedI: 0, allowedN: 0, forbiddenI: 0, forbiddenN: 0, weakAbsent: 0, checked: 0 });
 
     const max = maxReflections ? Math.min(reflections.length, maxReflections) : reflections.length;
     // Index bounds of the data (for detecting reflections missing from it).
@@ -359,19 +368,31 @@ export function scoreSpaceGroup(sg, reflections, sigThreshold = 5, maxReflection
             opResults[c].checked++;
             if (Math.abs(phase(h, conds[c].t)) > 0.05) {
                 // Forbidden reflection (should be systematically absent).
-                if (sig > sigThreshold) opResults[c].violations++;
-                else if (sig > 0 && sig <= weakThreshold) opResults[c].weakAbsent++;
+                opResults[c].forbiddenI += Math.abs(r.I);
+                opResults[c].forbiddenN++;
+                if (sig > 0 && sig <= weakThreshold) opResults[c].weakAbsent++;
             } else {
-                opResults[c].allowed++;
+                opResults[c].allowedI += Math.abs(r.I);
+                opResults[c].allowedN++;
             }
         }
+    }
+
+    // Decide, per condition, whether it is violated: the forbidden reflections
+    // must be collectively as strong as the allowed ones (mean-intensity ratio
+    // above the threshold). A lone strong outlier keeps the ratio tiny.
+    for (const o of opResults) {
+        const meanA = o.allowedN ? o.allowedI / o.allowedN : 0;
+        const meanF = o.forbiddenN ? o.forbiddenI / o.forbiddenN : 0;
+        const ratio = meanA > 0 ? meanF / meanA : 0;
+        o.violated = o.forbiddenN > 0 && ratio >= ratioThreshold;
     }
 
     // Count forbidden reflections that are absent from the dataset entirely.
     // This is typical of pre-merged data (e.g. COD), where systematically
     // absent reflections are simply not listed.
     for (let c = 0; c < conds.length; c++) {
-        if (opResults[c].violations > 0) continue;
+        if (opResults[c].violated) continue;
         const axes = invariantAxes(conds[c].M);
         let missing = 0;
         if (axes.length === 1) {
@@ -410,12 +431,12 @@ export function scoreSpaceGroup(sg, reflections, sigThreshold = 5, maxReflection
     let confirmedOps = 0;
     let confirmedAbsences = 0;
     for (const o of opResults) {
-        violations += o.violations;
-        // An op is confirmed when the data shows no significant violations, the
-        // axial/planar series is actually measured (allowed reflections present),
-        // and the forbidden reflections are either weak or absent from the data.
+        if (o.violated) { violations++; continue; }
+        // An op is confirmed when the condition holds, the axial/planar series
+        // is actually measured (allowed reflections present), and the forbidden
+        // reflections are either weak or absent from the data.
         const evidence = o.weakAbsent + (o.missing || 0);
-        if (o.violations === 0 && o.allowed >= 1 && evidence >= 2) {
+        if (o.allowedN >= 1 && evidence >= 2) {
             confirmedOps++;
             confirmedAbsences += evidence;
         }
@@ -638,6 +659,17 @@ export function analyzeSpaceGroup(sgData, reflections, cell, options = {}) {
     // Score candidates by systematic absences. Prefer fewest violations, then
     // the most confirmed absences (most restrictive compatible space group),
     // then the space group whose centrosymmetry matches the intensity data.
+    //
+    // The absence test is run on reflections MERGED under the selected Laue
+    // class, not on the raw (redundant) observations. With N-fold redundancy a
+    // single forbidden reflection contributes N independent measurements, so
+    // the chance that at least one exceeds the I/sigma threshold grows with N
+    // and the correct space group is wrongly rejected (its genuine absences
+    // look like violations). Merging collapses each orbit to one reflection
+    // with a combined sigma, so each unique reflection is counted once.
+    const scoreReflections = laue.ops
+        ? mergeReflections(reflections, laue.ops, cell).merged
+        : reflections;
     const centricity = estimateCentricity(reflections, cell);
     const useCentricity = centricity.centric || centricity.acentric;
     for (const c of candidates) {
@@ -654,7 +686,7 @@ export function analyzeSpaceGroup(sgData, reflections, cell, options = {}) {
         }
         let bestSc = null;
         for (const s of settings.length ? settings : [c]) {
-            const sc = scoreSpaceGroup(s, reflections, options.sigThreshold || 5);
+            const sc = scoreSpaceGroup(s, scoreReflections, options.sigThreshold || 5);
             if (!bestSc || sc.violations < bestSc.violations ||
                 (sc.violations === bestSc.violations && sc.confirmedOps > bestSc.confirmedOps)) {
                 bestSc = sc;

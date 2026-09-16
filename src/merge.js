@@ -49,10 +49,15 @@ export function mergeReflections(reflections, matrices, cell, options = {}) {
         const key = rep[0] + ',' + rep[1] + ',' + rep[2];
         let arr = map.get(key);
         if (!arr) { arr = []; map.set(key, arr); }
+        // Drop observations that the data reduction flagged as rejected
+        // (XDS_ASCII marks them with a negative sigma); they are outliers and
+        // must not enter the weighted mean.
+        if (r.rejected) continue;
         arr.push({ I: r.I, sig: r.sig });
     }
     const merged = [];
     for (const [key, arr] of map) {
+        if (!arr.length) continue;
         const c1 = key.indexOf(',');
         const c2 = key.indexOf(',', c1 + 1);
         const h = parseInt(key.slice(0, c1), 10);
@@ -66,16 +71,17 @@ export function mergeReflections(reflections, matrices, cell, options = {}) {
             msum += o.I;
         }
         const I = w > 0 ? wsum / w : msum / n;
-        // Combined sigma: weighted-mean sigma plus the sample scatter term
-        // (standard error of the mean), so inconsistent observations inflate
-        // the merged sigma (combines the weighted-mean error with the scatter).
-        let sem2 = 0;
-        if (n > 1) {
-            const mean = msum / n;
-            for (const o of arr) sem2 += (o.I - mean) * (o.I - mean);
-            sem2 /= (n * (n - 1));
-        }
-        const sig = Math.sqrt((w > 0 ? 1 / w : 0) + sem2);
+        // Sigma of the weighted mean. The previous code ADDED the standard
+        // error of the mean (the observed sample scatter) to the weighted-mean
+        // variance, which double-counts the variance: for consistent data both
+        // terms estimate sigma^2/n, so every merged sigma came out about
+        // sqrt(2) too large. The resulting I/sigma did not match a reference
+        // (XPREP on the same XDS_ASCII file), so the usual weighted-mean sigma
+        // sqrt(1/sum(w)) is used instead. A global error-inflation factor can
+        // still be applied downstream (SHELXL refines its weighting), but the
+        // per-reflection scatter must not be added twice.
+        const sig2 = w > 0 ? 1 / w : 0;
+        const sig = Math.sqrt(sig2);
         merged.push({
             h, k, l,
             I,
@@ -616,13 +622,45 @@ export function computeMergeStatistics(reflections, matrices, cell, options = {}
 
 // Write a merged dataset in SHELX five-column HKL format.
 export function writeShelxHkl(merged) {
+    // SHELX HKLF 4 is a FIXED-COLUMN format: h, k, l occupy 4-column fields and
+    // F^2, sigma(F^2) occupy 8-column fields (columns 1-4, 5-8, 9-12, 13-20,
+    // 21-28). The fields must be concatenated with no extra blanks -- a single
+    // stray space shifts every subsequent column and SHELXL aborts with
+    // "REFLECTION n HAS WRONG FORMAT".
+    //
+    // The data are rescaled by a power of ten so that the largest F^2/sigma
+    // fits the 8-column field with a separating blank. Raw XDS photon counts
+    // can reach 1e6: without rescaling the F^2 fills its field, so `l` and F^2
+    // run together ("   016177.12") and free-format readers (SHELXT) silently
+    // mis-read the record, which produced a much worse structure solution
+    // (R1 0.15 and the amino N assigned as O) than the same data on a compact
+    // scale (R1 0.07, correct formula). XPREP likewise rescales the data to "a
+    // reasonable scale"; the overall scale is arbitrary because SHELX refines
+    // it, so this changes nothing crystallographically.
+    let maxV = 0;
+    for (const r of merged) {
+        if (r.h === 0 && r.k === 0 && r.l === 0) continue;
+        const a = Math.abs(r.I), b = Math.abs(r.sig);
+        if (a > maxV) maxV = a;
+        if (b > maxV) maxV = b;
+    }
+    let scale = 1;
+    while (maxV * scale >= 10000) scale /= 10;
+    const fit8 = (x) => {
+        x *= scale;
+        let s = x.toFixed(2);
+        if (s.length > 8) s = x.toFixed(1);
+        if (s.length > 8) s = x.toFixed(0);
+        if (s.length > 8) s = x.toExponential(0);
+        return s.padStart(8);
+    };
     const lines = [];
     for (const r of merged) {
         // Skip the origin reflection (0,0,0): SHELXL stops reading the HKL
         // file entirely if it is present (reports 0 reflections / NO REFLECTION
         // DATA); it derives F(000) from the UNIT instruction instead.
         if (r.h === 0 && r.k === 0 && r.l === 0) continue;
-        lines.push(`${String(r.h).padStart(4)}${String(r.k).padStart(4)}${String(r.l).padStart(4)}${r.I.toFixed(2).padStart(10)}${r.sig.toFixed(2).padStart(8)}`);
+        lines.push(`${String(r.h).padStart(4)}${String(r.k).padStart(4)}${String(r.l).padStart(4)}${fit8(r.I)}${fit8(r.sig)}`);
     }
     return lines.join('\n') + '\n';
 }

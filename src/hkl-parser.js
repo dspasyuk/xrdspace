@@ -63,7 +63,7 @@ function parseShelxLine(tokens) {
     const I = parseFloat(tokens[3]);
     const sig = parseFloat(tokens[4]);
     if (isNaN(I)) return null;
-    return { h, k, l, I, sig: isNaN(sig) ? 0 : sig };
+    return { h, k, l, I, sig: isNaN(sig) ? 0 : Math.abs(sig) };
 }
 
 // Parse an XDS_ASCII data line. Format (unmerged and merged):
@@ -78,7 +78,14 @@ function parseXdsLine(tokens) {
     const I = parseFloat(tokens[3]);
     const sig = parseFloat(tokens[4]);
     if (isNaN(I)) return null;
-    return { h, k, l, I, sig: isNaN(sig) ? 0 : sig };
+    // XDS flags observations that it rejected during scaling (e.g. overloaded
+    // or outlier reflections) with a NEGATIVE sigma. The magnitude is still a
+    // plausible standard deviation, but such observations must not enter the
+    // merge: the old code tested `sig > 0`, so a negative sigma fell into the
+    // "no sigma" branch and was given unit weight, letting a rejected outlier
+    // dominate the weighted mean (and producing absurdly small merged sigmas).
+    const rejected = !isNaN(sig) && sig < 0;
+    return { h, k, l, I, sig: isNaN(sig) ? 0 : Math.abs(sig), rejected };
 }
 
 // Parse a COD .hkl file: a CIF-style file with a `loop_` of `_refln_` keys.
