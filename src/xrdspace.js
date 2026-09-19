@@ -38,6 +38,8 @@ Input / output:
                         keeping all observations (default: <input>_unmerged.hkl)
   --log <file>        Write the formatted report to <file>
                       (default: xrdspace.log next to the input file)
+  --no-write          Analyse and print the report to stdout only; do not
+                      create any output files (no HKL, .ins or log files).
 
 Unit-cell database search (no HKL file needed):
   --search            Search BOTH the Crystallography Open Database (COD) and the
@@ -315,6 +317,7 @@ async function promptCell() {
         sfac: 1, formula: 1, log: 1, tol: 1, 'tol-angle': 1, limit: 1, 'pdb-table': 1,
         cell: 6, resolution: 2,
         chiral: 0, 'no-chiral': 0, nochiral: 0, valid: 0,
+        'no-write': 0, nowrite: 0,
         search: 0, codsearch: 0, pdbsearch: 0,
     };
 
@@ -367,7 +370,7 @@ function parseSfacInput(input) {
 }
 
 function parseArgs(argv) {
-    const args = { hklin: null, hklout: null, xdsout: null, unmergedOut: null, cell: null, spaceGroup: null, laue: null, resolution: null, sigThreshold: 5, sfac: null, log: null, chiral: null, help: false, version: false, search: null, codsearch: false, pdbsearch: false, tol: 1.0, tolAngle: 1.5, limit: 20, valid: false, pdbTable: null };
+    const args = { hklin: null, hklout: null, xdsout: null, unmergedOut: null, cell: null, spaceGroup: null, laue: null, resolution: null, sigThreshold: 5, sfac: null, log: null, chiral: null, help: false, version: false, search: null, codsearch: false, pdbsearch: false, tol: 1.0, tolAngle: 1.5, limit: 20, valid: false, pdbTable: null, noWrite: false };
     let i = 0;
     while (i < argv.length) {
         const a = argv[i];
@@ -431,6 +434,7 @@ function parseArgs(argv) {
         else if (key === 'pdb-table') args.pdbTable = vals[0];
         else if (key === 'chiral') args.chiral = true;
         else if (key === 'no-chiral' || key === 'nochiral') args.chiral = false;
+        else if (key === 'no-write' || key === 'nowrite') args.noWrite = true;
         else if (key === 'search') args.search = true;
         else if (key === 'codsearch') args.codsearch = true;
         else if (key === 'pdbsearch') args.pdbsearch = true;
@@ -695,8 +699,9 @@ async function main() {
         });
     }
 
-    // Write the corrected/merged HKL files.
-    if (result.merge) {
+    // Write the corrected/merged HKL files. With --no-write we analyse only
+    // and leave the filesystem untouched.
+    if (result.merge && !args.noWrite) {
         const shelxPath = path.resolve(args.hklout || path.join(dir, base + '_merged.hkl'));
         const xdsPath = path.resolve(args.xdsout || path.join(dir, base + '_xds.hkl'));
         const unmergedPath = path.resolve(args.unmergedOut || path.join(dir, base + '_unmerged.hkl'));
@@ -725,14 +730,20 @@ async function main() {
 
     // Consolidated report: printed to the console and saved next to the input.
     const logPath = path.resolve(args.log || path.join(dir, 'xrdspace.log'));
-    outputFiles.push({ path: logPath, note: '(this report)' });
+    if (!args.noWrite) {
+        outputFiles.push({ path: logPath, note: '(this report)' });
+    } else {
+        notes.push('--no-write in effect: no output files were created (stdout only)');
+    }
     const report = buildReport(result, {
         inputPath: filePath,
         outputFiles,
         validationText,
         notes,
     });
-    fs.writeFileSync(logPath, report, 'utf8');
+    if (!args.noWrite) {
+        fs.writeFileSync(logPath, report, 'utf8');
+    }
     process.stdout.write('\n' + report);
 }
 

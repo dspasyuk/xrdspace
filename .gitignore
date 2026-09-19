@@ -7,3 +7,4 @@ tests/xprep-work/
 data/
 *.log
 .DS_Store
+/test/

@@ -12,7 +12,9 @@
     "test:mx": "node tests/xrdspace-mx.js",
     "test:xprep": "node tests/xrdspace-xprep.js",
     "test:cell": "node tests/xrdspace-cellsearch.js",
+    "test:ins": "node tests/xrdspace-ins.js",
     "test:pdb": "node tests/xrdspace-pdbvalid.js",
+    "test:mtz": "node tests/xrdspace-mtz.js",
     "build:pdb": "node scripts/build-pdb-table.js"
   },
   "keywords": [
