@@ -256,6 +256,57 @@ async function passXprep(targets, concurrency) {
 
 // --- report ---
 
+// Build a PASS/NEAR/FAIL bar chart (same style as xrdspace-cod.js) for the
+// 10 000-entry wide-set validation.
+function build10kSvg(bySys, totals) {
+    const W = 900, H = 420, PL = 90, PR = 30, PT = 40, PB = 70;
+    const colors = { PASS: '#2e9e4f', NEAR: '#e0a800', FAIL: '#d64545' };
+    const systems = ['triclinic', 'monoclinic', 'orthorhombic', 'tetragonal', 'trigonal', 'hexagonal', 'cubic'];
+    const maxCount = Math.max(...systems.map(s => (bySys[s] ? bySys[s].total : 0)), 1);
+    const innerW = W - PL - PR, innerH = H - PT - PB;
+    const groupW = innerW / systems.length;
+    const barW = groupW * 0.22;
+
+    const parts = [];
+    parts.push(`<svg xmlns="http://www.w3.org/2000/svg" width="${W}" height="${H}" viewBox="0 0 ${W} ${H}" font-family="sans-serif">`);
+    parts.push(`<rect x="0" y="0" width="${W}" height="${H}" fill="#ffffff"/>`);
+    parts.push(`<text x="${W/2}" y="24" text-anchor="middle" font-size="18" font-weight="bold" fill="#222">xrdspace space-group determination vs COD (10 000 structures, wide set)</text>`);
+
+    for (let g = 0; g <= 4; g++) {
+        const v = maxCount * g / 4;
+        const y = PT + innerH - innerH * g / 4;
+        parts.push(`<line x1="${PL}" y1="${y}" x2="${W-PR}" y2="${y}" stroke="#e5e5e5" stroke-width="1"/>`);
+        parts.push(`<text x="${PL-8}" y="${y+4}" text-anchor="end" font-size="11" fill="#666">${Math.round(v)}</text>`);
+    }
+
+    systems.forEach((sys, si) => {
+        const b = bySys[sys] || { total: 0, pass: 0, near: 0, fail: 0 };
+        const gx = PL + si * groupW + (groupW - 3 * barW) / 2;
+        [['PASS', b.pass], ['NEAR', b.near], ['FAIL', b.fail]].forEach(([label, val], ci) => {
+            const h = val / maxCount * innerH;
+            const x = gx + ci * (barW + 2);
+            const y = PT + innerH - h;
+            parts.push(`<rect x="${x.toFixed(1)}" y="${y.toFixed(1)}" width="${barW.toFixed(1)}" height="${h.toFixed(1)}" fill="${colors[label]}" rx="2"/>`);
+            if (val > 0) {
+                parts.push(`<text x="${(x + barW/2).toFixed(1)}" y="${(y - 4).toFixed(1)}" text-anchor="middle" font-size="11" fill="#333" font-weight="bold">${val}</text>`);
+            }
+        });
+        const label = sys.charAt(0).toUpperCase() + sys.slice(1);
+        parts.push(`<text x="${(gx + groupW/2).toFixed(1)}" y="${H-PB+16}" text-anchor="middle" font-size="12" fill="#333">${label}</text>`);
+        parts.push(`<text x="${(gx + groupW/2).toFixed(1)}" y="${H-PB+31}" text-anchor="middle" font-size="11" fill="#888">n=${b.total}</text>`);
+    });
+
+    const lx = W/2 - 90, ly = H - 22;
+    ['PASS', 'NEAR', 'FAIL'].forEach((label, i) => {
+        const x = lx + i * 130;
+        parts.push(`<rect x="${x}" y="${ly-10}" width="14" height="14" fill="${colors[label]}" rx="2"/>`);
+        parts.push(`<text x="${x+20}" y="${ly+1}" font-size="12" fill="#333">${label}</text>`);
+    });
+
+    parts.push(`</svg>`);
+    return parts.join('\n');
+}
+
 function report(picksFile = PICKS) {
     const picks = JSON.parse(fs.readFileSync(picksFile, 'utf8'));
     const byId = new Map(picks.map(p => [p.id, p]));
@@ -349,6 +400,11 @@ function report(picksFile = PICKS) {
         entries: merged,
     }, null, 1));
     console.log(`\nreport -> ${out}`);
+
+    // PASS/NEAR/FAIL chart for the wide set.
+    const chartPath = path.join(__dirname, 'xrdspace-report-10k.svg');
+    fs.writeFileSync(chartPath, build10kSvg(sys, { total: assessed }));
+    console.log(`chart  -> ${chartPath}`);
 }
 
 // --- main ---

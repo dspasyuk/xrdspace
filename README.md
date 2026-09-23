@@ -608,6 +608,8 @@ same entries) and orthorhombic 352 → 414. The recovered rate is unchanged at
 several space groups have zero violations and identical evidence, so the
 published group stays in the candidate list (NEAR) but is not the top pick.
 
+![xrdspace space-group determination vs COD — 2000-entry set](tests/xrdspace-report.png?v=4)
+
 ### Wide-set (10 000-entry) validation and further fixes
 
 `tests/xrdspace-compare-10k.js` validates against a **fresh, stratified set of
@@ -672,7 +674,7 @@ Fixes 4–5 raised the 10 000-entry exact-match rate **79.2 % → 81.0 %**
 (tetragonal PASS 110 → 287) and the 2000-entry exact match **1024 → 1080**,
 with no regressions.
 
-![xrdspace space-group determination vs COD](tests/xrdspace-report.png?v=4)
+![xrdspace space-group determination vs COD — 10 000-entry wide set](tests/xrdspace-report-10k.png?v=1)
 
 ---
 
@@ -803,9 +805,11 @@ xrdspace/
 │   ├── xrdspace-mx.js     # macromolecular (MX) validation harness
 │   ├── xrdspace-cellsearch.js  # offline tests of Niggli reduction / similarity
 │   ├── xrdspace-pdbvalid.js    # offline tests of the PDB lookup (--valid)
-│   ├── xrdspace-report.json  # latest COD validation results
-│   ├── xrdspace-report.svg   # PASS/NEAR/FAIL chart per crystal system
-│   └── xrdspace-report.png   # PNG render of the COD chart
+│   ├── xrdspace-report.json  # latest COD validation results (2000 entries)
+│   ├── xrdspace-report.svg   # PASS/NEAR/FAIL chart per crystal system (2000)
+│   ├── xrdspace-report.png   # PNG render of the 2000-entry chart
+│   ├── xrdspace-report-10k.svg  # PASS/NEAR/FAIL chart (10 000-entry wide set)
+│   └── xrdspace-report-10k.png  # PNG render of the 10 000-entry chart
 ├── data/                  # generated PDB lookup table (git-ignored, ~40 MB)
 ├── package.json
 ├── LICENSE                # MIT
