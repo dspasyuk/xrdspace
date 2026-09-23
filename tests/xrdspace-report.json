@@ -1,7 +1,7 @@
 {
   "total": 2000,
-  "pass": 1031,
-  "near": 887,
+  "pass": 1080,
+  "near": 838,
   "fail": 37,
   "skip": 45,
   "rate": 98.1,
@@ -29,15 +29,15 @@
     },
     "tetragonal": {
       "total": 451,
-      "pass": 157,
-      "near": 266,
+      "pass": 210,
+      "near": 213,
       "fail": 15,
       "skip": 13
     },
     "trigonal": {
       "total": 296,
-      "pass": 119,
-      "near": 174,
+      "pass": 112,
+      "near": 181,
       "fail": 1,
       "skip": 2
     },
@@ -50,8 +50,8 @@
     },
     "cubic": {
       "total": 200,
-      "pass": 115,
-      "near": 69,
+      "pass": 118,
+      "near": 66,
       "fail": 14,
       "skip": 2
     }

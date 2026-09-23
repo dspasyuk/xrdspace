@@ -17,11 +17,14 @@ SHELXD / SHELXT / SHELXS.
   (COD)** and the **RCSB Protein Data Bank (PDB)** for structures matching a
   query cell (`--codsearch / --pdbsearch / --search`), ranked by a
   Niggli-reduced-cell match score.
-- Validated against **2000 real structures from the Crystallography Open
-  Database (COD)**: the published space group is recovered exactly (PASS) or
-  appears among the zero-violation candidates (NEAR) in **98.0 %** of assessed
-  entries — and against **real macromolecular (protein) data**, where every
-  determined space group is chiral (Sohncke).
+- Validated against **2000** and **10 000 real structures from the
+  Crystallography Open Database (COD)**: the published space group is recovered
+  exactly (PASS) or appears among the zero-violation candidates (NEAR) in
+  **98.1 %** / **99.2 %** of assessed entries (exact match **81.0 %** on the
+  10 000) — and against **real macromolecular (protein) data**, where every
+  determined space group is chiral (Sohncke). On a head-to-head subset it
+  recovers the published group for **99.0 %** of entries versus XPREP's 85.9 %
+  exact.
 
 ---
 
@@ -559,21 +562,20 @@ Latest full run (see `tests/xrdspace-report.json` and the chart
 | Crystal system | Total | PASS | NEAR | FAIL | SKIP |
 |---|---:|---:|---:|---:|---:|
 | Triclinic | 40 | 26 | 14 | 0 | 0 |
-| Monoclinic | 202 | 118 | 80 | 2 | 2 |
-| Orthorhombic | 625 | 414 | 192 | 4 | 15 |
-| Tetragonal | 451 | 153 | 267 | 18 | 13 |
-| Trigonal | 296 | 117 | 174 | 3 | 2 |
-| Hexagonal | 186 | 72 | 102 | 1 | 11 |
-| Cubic | 200 | 124 | 62 | 12 | 2 |
-| **Total** | **2000** | **1024** | **891** | **40** | **45** |
+| Monoclinic | 202 | 116 | 82 | 2 | 2 |
+| Orthorhombic | 625 | 425 | 181 | 4 | 15 |
+| Tetragonal | 451 | 210 | 213 | 15 | 13 |
+| Trigonal | 296 | 112 | 181 | 1 | 2 |
+| Hexagonal | 186 | 73 | 101 | 1 | 11 |
+| Cubic | 200 | 118 | 66 | 14 | 2 |
+| **Total** | **2000** | **1080** | **838** | **37** | **45** |
 
-**98.0 %** of the 1955 assessed entries have the published space group either
-determined exactly or present among the zero-violation candidates. The
-remaining failures are genuine pseudo-symmetry and sparse-data ambiguities
-(the test exits non-zero only if the rate drops below 90 %). The SKIP count
-rose from 38 to 45 because powder-pattern CIFs (a `_pd_*` loop with no
-single-crystal `_refln_` list) are now correctly rejected instead of being
-misread as SHELX five-column data.
+**98.1 %** of the 1955 assessed entries have the published space group either
+determined exactly or present among the zero-violation candidates (the test
+exits non-zero only if the rate drops below 90 %). The SKIP count is 45
+because powder-pattern CIFs (a `_pd_*` loop with no single-crystal `_refln_`
+list) are correctly rejected instead of being misread as SHELX five-column
+data.
 
 ### Systematic-absence corrections
 
@@ -605,6 +607,70 @@ same entries) and orthorhombic 352 → 414. The recovered rate is unchanged at
 98.0 % — the few remaining tetragonal/hexagonal dips are genuine ties where
 several space groups have zero violations and identical evidence, so the
 published group stays in the candidate list (NEAR) but is not the top pick.
+
+### Wide-set (10 000-entry) validation and further fixes
+
+`tests/xrdspace-compare-10k.js` validates against a **fresh, stratified set of
+10 000 COD single-crystal entries** (`tests/cod-picks-10k.json`), disjoint from
+the 2000 above and drawn to cover all 186 space groups in the pool. It runs the
+full determination on every entry (space-group accuracy + output data-quality
+metrics: R(merge), completeness, d(I/σ=1), d(CC½=0.30), mean I/σ, multiplicity)
+and, on a stratified 500-entry subset, a head-to-head against **Bruker XPREP**
+(the XPREP pass drives the same interactive binary via `scripts/xprep-run.py`
+and records the chosen space group, its R(sym) and CFOM).
+
+```sh
+node tests/xrdspace-compare-10k.js --xrd            # full 10k xrdspace pass
+node tests/xrdspace-compare-10k.js --xprep --picks tests/cod-picks-10k-500.json
+node tests/xrdspace-compare-10k.js --report         # merge both + summary
+```
+
+Latest run (see `tests/compare-10k-report.json`):
+
+| Crystal system | Assessed | PASS | NEAR | FAIL |
+|---|---:|---:|---:|---:|
+| Triclinic | 2146 | 1283 | 861 | 2 |
+| Monoclinic | 5177 | 4936 | 205 | 36 |
+| Orthorhombic | 1550 | 1257 | 272 | 21 |
+| Tetragonal | 483 | 287 | 188 | 8 |
+| Trigonal | 423 | 232 | 185 | 6 |
+| Hexagonal | 74 | 36 | 38 | 0 |
+| Cubic | 135 | 61 | 70 | 4 |
+| **Total** | **9988** | **8092** | **1819** | **77** |
+
+**99.2 %** of the 9988 assessed entries have the published space group
+determined exactly or present among the zero-violation candidates; **81.0 %**
+are exact matches. Head-to-head on the 500-entry subset (both programs
+answered): xrdspace recovers the published group for **99.0 %** (exact 82.3 %)
+versus XPREP's **85.9 %** exact — xrdspace's *recovery* rate (published group
+determined or listed as a zero-violation candidate) is far higher because XPREP
+offers only a short candidate list. The two agree on 396 entries; the remaining
+gaps are concentrated in triclinic (the P 1 vs P −1 centricity call, where the
+Wilson |E²−1| distributions of centric and acentric data genuinely overlap).
+
+This wider set exposed two further bugs, both fixed in `src/analyze.js`:
+
+4. **Centering tie-break crashed on B/C/I-centred cells.** For primitive data
+   every centering has zero violations, and the old tie-break picked the most
+   *restrictive* centering (B/C/I) instead of P. A B/C/I-centred triclinic cell
+   has no stored settings in the dictionary (only `P 1` / `P −1`), so the
+   candidate list came back empty and the tool returned **no space group at
+   all**. The tie is now broken by the *mean intensity of the forbidden
+   reflections* (the correct centering's forbidden reflections sit at background
+   level), and a final fallback to the primitive setting guarantees a candidate
+   always exists.
+5. **Confirmed-absences outranked the Laue class.** A higher-symmetry group
+   (e.g. `I 41/a m d`, Laue 4/mmm) beat the correct lower-symmetry one
+   (`I 41/a`, Laue 4/m) purely because its extra mirrors add trivially-
+   "confirmed" absences, even when the R-merge showed 4/mmm at 53 % R(sym)
+   against 4/m at 0 %. A candidate whose Laue class was *rejected* by the R-merge
+   (R(sym) above the Laue-selection cap) is now ranked below every candidate
+   whose Laue class is supported, before the confirmed-absence counts are
+   compared.
+
+Fixes 4–5 raised the 10 000-entry exact-match rate **79.2 % → 81.0 %**
+(tetragonal PASS 110 → 287) and the 2000-entry exact match **1024 → 1080**,
+with no regressions.
 
 ![xrdspace space-group determination vs COD](tests/xrdspace-report.png?v=3)
 
@@ -647,11 +713,13 @@ Full 2000-entry result (`tests/xrdspace-xprep-report.json`):
 | Cubic | 198 | 111 | 69 | 51 |
 | **Total** | **1962** | **928 (47.3 %)** | **752 (38.3 %)** | **524** |
 
-> **Note:** this head-to-head was measured *before* the systematic-absence
-> corrections described above. With the fixes, xrdspace's exact-match total on
-> the same entries rises to 1024 (including trigonal 56 → 117 vs XPREP 107),
+> **Note:** this head-to-head was measured *before* the corrections described
+> above. With them, xrdspace's exact-match total on the same 2000 entries
+> rises to **1080** (including trigonal 56 → 112 and tetragonal 169 → 210),
 > so the xrdspace column here is a conservative lower bound. Re-run
-> `npm run test:xprep` to refresh it.
+> `npm run test:xprep` to refresh it — or use the wider 10 000-entry head-to-
+> head above (`tests/xrdspace-compare-10k.js`), which is the current
+> benchmark.
 
 - xrdspace recovers the published group (exact, or present among the
   zero-violation candidates) for **97.7 %** of assessed entries; XPREP for
@@ -728,6 +796,9 @@ xrdspace/
 ├── tests/
 │   ├── xrdspace-cod.js    # COD validation harness (2000 entries)
 │   ├── cod-picks.json     # the 2000 COD entries (id, cell, published SG)
+│   ├── xrdspace-compare-10k.js  # wide 10k COD validation + XPREP head-to-head
+│   ├── cod-picks-10k.json # the 10000 stratified COD entries
+│   ├── cod-picks-10k-500.json   # stratified 500-entry XPREP head-to-head subset
 │   ├── xrdspace-xprep.js  # head-to-head xrdspace vs Bruker XPREP comparison
 │   ├── xrdspace-mx.js     # macromolecular (MX) validation harness
 │   ├── xrdspace-cellsearch.js  # offline tests of Niggli reduction / similarity

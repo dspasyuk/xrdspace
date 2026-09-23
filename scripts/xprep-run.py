@@ -43,17 +43,40 @@ def parse_prp(path):
         chosen = m.group(1)
     candidates = []
     seen = set()
-    row = re.compile(r"^\s*\[([A-Za-z0-9])\]\s+(\S+)\s+#\s*(\d+)\s+(\S+)", re.M)
-    for mm in row.finditer(text):
-        opt = mm.group(1)
+    # Full candidate row, e.g.:
+    #   [A] I-4            # 82  non-cen  1    99  0.012     24  0.0 / 53.4  31.06
+    # columns: opt  space-group  #no  type  axes  csd  R(sym)  N(eq)  Syst.Abs  CFOM
+    # The "Syst.Abs" column is the only "x / y" pair; it separates the leading
+    # columns (R(sym), N(eq) are its two predecessors) from the trailing CFOM.
+    for raw in text.splitlines():
+        line = raw.strip()
+        m = re.match(r"\[([A-Za-z0-9])\]\s+(\S+)\s+#\s*(\d+)\s+(\S+)", line)
+        if not m:
+            continue
+        opt = m.group(1)
         if opt in seen:
             continue
         seen.add(opt)
+        toks = line.split()
+        def num(idx):
+            try:
+                return float(toks[idx])
+            except (IndexError, ValueError):
+                return None
+        rsym = cfom = None
+        for i in range(2, len(toks) - 3):
+            if toks[i + 1] == "/":
+                # toks[i-2]=R(sym)  toks[i-1]=N(eq)  toks[i]=x  '/'  toks[i+2]=y  toks[i+3]=CFOM
+                rsym = num(i - 2)
+                cfom = num(i + 3)
+                break
         candidates.append({
             "opt": opt,
-            "hm": mm.group(2),
-            "number": int(mm.group(3)),
-            "type": mm.group(4),
+            "hm": m.group(2),
+            "number": int(m.group(3)),
+            "type": m.group(4),
+            "rsym": rsym,
+            "cfom": cfom,
         })
     return chosen, candidates
 

@@ -4,6 +4,11 @@ mx/
 tests/xrdspace-mx-report.json
 tests/xrdspace-xprep-report.json
 tests/xprep-work/
+tests/xprep-work-10k/
+tests/compare-10k-xrd.jsonl
+tests/compare-10k-xprep.jsonl
+tests/compare-10k-report.json
+tests/cod-10k-download-report.json
 data/
 *.log
 .DS_Store
