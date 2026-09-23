@@ -672,7 +672,7 @@ Fixes 4–5 raised the 10 000-entry exact-match rate **79.2 % → 81.0 %**
 (tetragonal PASS 110 → 287) and the 2000-entry exact match **1024 → 1080**,
 with no regressions.
 
-![xrdspace space-group determination vs COD](tests/xrdspace-report.png?v=3)
+![xrdspace space-group determination vs COD](tests/xrdspace-report.png?v=4)
 
 ---
 
