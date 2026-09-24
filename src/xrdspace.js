@@ -87,6 +87,27 @@ PDB space-group validation:
                                     data/pdb-cells.json). Build it once with:
                                       node scripts/build-pdb-table.js
 
+Beam-damage analysis (RADDOSE-style):
+  --rad                             Analyse radiation damage over the course of the
+                                    scan. Uses each observation's rotation angle
+                                    (PSI column) as the dose coordinate: the mean
+                                    intensity recorded LATE in the scan is compared
+                                    with that recorded EARLY, per resolution shell
+                                    (R = <I>_late / <I>_early; R < 1 = decayed).
+                                    Needs UNMERGED XDS_ASCII input with a PSI
+                                     column; on other input it reports why it is
+                                     not usable. The per-shell table is written to
+                                     the consolidated report (xrdspace.log). See
+                                     Pantelides et al., Acta Cryst. D65, 1010-1022
+                                     (2009).
+   --rad-minisig <n>                 I/sigma threshold for observations entering the
+                                    analysis (default 2)
+  --rad-early <frac>                Fraction of the rotation counted as "early"
+                                    (default 0.25)
+  --rad-late <frac>                 Fraction of the rotation counted as "late"
+                                    (default 0.25)
+  --rad-shells <n>                  Number of resolution shells (default 10)
+
 Misc:
   --help, -h          Show this help
   --version, -v       Show version
@@ -161,6 +182,44 @@ function fmtArtifacts(a) {
     if (a.anisoRatio != null) {
         L.push(`    max/min = ${a.anisoRatio.toFixed(2)}${a.anisotropic ? '   <-- anisotropic' : '   (isotropic)'}`);
     }
+    return L;
+}
+
+// RADDOSE-style beam-damage report block (per-shell I_late/I_early decay).
+function fmtBeamDamage(bd) {
+    const L = [];
+    if (!bd || !bd.usable) {
+        L.push(reportKv('Beam damage', 'not analysed'));
+        L.push(`    ${(!bd || bd.reason) || 'no data'}`);
+        L.push('    (needs UNMERGED XDS_ASCII input with a per-observation rotation angle)');
+        return L;
+    }
+    L.push(reportKv('Scan rotation', `${bd.totalRotation} deg` + (Number.isFinite(bd.startAngle) ? ` (start ${bd.startAngle} deg)` : '')));
+    L.push(reportKv('Dose positions', `${bd.doseMin.toFixed(1)} - ${bd.doseMax.toFixed(1)} deg (PSI)`));
+    L.push(reportKv('Usable observations', `${bd.nObs}  (${bd.nRefl} reflections)`));
+    L.push(reportKv('Window', `early = first ${Math.round(bd.earlyFrac * 100)}%, late = last ${Math.round(bd.lateFrac * 100)}%   (I/σ >= ${bd.minIsig})`));
+    L.push('');
+    const o = bd.overall;
+    L.push(reportKv('Overall <I>_late/<I>_early', Number.isFinite(o.ratio) ? o.ratio.toFixed(3) : '?'));
+    if (Number.isFinite(o.k)) L.push(reportKv('Decay constant k', `${o.k.toFixed(6)} per deg  (${(o.k * 100).toFixed(4)} per 100 deg)`));
+    if (o.doseHalf != null) L.push(reportKv('Rotation to half intensity', `${o.doseHalf.toFixed(1)} deg`));
+    if (Number.isFinite(o.r2)) L.push(reportKv('Fit R^2 (ln R vs 1/d^2)', o.r2.toFixed(3)));
+    L.push(reportKv('Damage detected', bd.decay));
+    L.push('');
+    L.push('  Per-resolution-shell decay  (R = <I>_late / <I>_early;  R < 1 = decayed):');
+    L.push('    d range (A)      nE     nL     <I>_early   <I>_late       R');
+    for (const s of bd.shells) {
+        const R = Number.isFinite(s.ratio) ? s.ratio.toFixed(3) : '   -';
+        const flag = Number.isFinite(s.ratio) && s.ratio < 0.9 ? '   <-- decayed' : '';
+        L.push('  ' + `${s.dHi.toFixed(2)}-${s.dLo.toFixed(2)}`.padEnd(15)
+            + String(s.nEarly).padStart(6) + String(s.nLate).padStart(6)
+            + (Number.isFinite(s.meanEarly) ? s.meanEarly.toFixed(1).padStart(11) : '-'.padStart(11))
+            + (Number.isFinite(s.meanLate) ? s.meanLate.toFixed(1).padStart(11) : '-'.padStart(11))
+            + R.padStart(8) + flag);
+    }
+    L.push('');
+    L.push('  Note: the dose coordinate is the rotation angle. Converting k to e-/A^2 or');
+    L.push('  Gy requires the beam flux / current, which is not stored in the HKL file.');
     return L;
 }
 
@@ -273,6 +332,12 @@ export function buildReport(result, opts = {}) {
         L.push('');
     }
 
+    if (result.merge && result.merge.beamDamage) {
+        L.push(...reportSection('BEAM DAMAGE (RADDOSE-STYLE)'));
+        L.push(...fmtBeamDamage(result.merge.beamDamage));
+        L.push('');
+    }
+
     if (opts.validationText) {
         L.push(...reportSection('PDB SPACE-GROUP VALIDATION'));
         L.push(opts.validationText);
@@ -319,6 +384,7 @@ async function promptCell() {
         chiral: 0, 'no-chiral': 0, nochiral: 0, valid: 0,
         'no-write': 0, nowrite: 0,
         search: 0, codsearch: 0, pdbsearch: 0,
+        rad: 0, 'rad-minisig': 1, 'rad-early': 1, 'rad-late': 1, 'rad-shells': 1,
     };
 
 // Split a string on whitespace with a single pass.
@@ -370,7 +436,7 @@ function parseSfacInput(input) {
 }
 
 function parseArgs(argv) {
-    const args = { hklin: null, hklout: null, xdsout: null, unmergedOut: null, cell: null, spaceGroup: null, laue: null, resolution: null, sigThreshold: 5, sfac: null, log: null, chiral: null, help: false, version: false, search: null, codsearch: false, pdbsearch: false, tol: 1.0, tolAngle: 1.5, limit: 20, valid: false, pdbTable: null, noWrite: false };
+    const args = { hklin: null, hklout: null, xdsout: null, unmergedOut: null, cell: null, spaceGroup: null, laue: null, resolution: null, sigThreshold: 5, sfac: null, log: null, chiral: null, help: false, version: false, search: null, codsearch: false, pdbsearch: false, tol: 1.0, tolAngle: 1.5, limit: 20, valid: false, pdbTable: null, noWrite: false, rad: false, radMinIsig: 2, radEarlyFrac: 0.25, radLateFrac: 0.25, radShells: 10 };
     let i = 0;
     while (i < argv.length) {
         const a = argv[i];
@@ -391,7 +457,8 @@ function parseArgs(argv) {
             || a === 'cell' || a === 'resolution' || a === 'sigthreshold' || a === 'sfac' || a === 'formula' || a === 'log'
             || a === 'chiral' || a === 'no-chiral' || a === 'nochiral'
             || a === 'search' || a === 'codsearch' || a === 'pdbsearch' || a === 'tol' || a === 'tol-angle' || a === 'limit'
-            || a === 'valid' || a === 'pdb-table') {
+            || a === 'valid' || a === 'pdb-table'
+            || a === 'rad' || a === 'rad-minisig' || a === 'rad-early' || a === 'rad-late' || a === 'rad-shells') {
             key = a;
             n = N_VALUES[a];
         } else if (!a.startsWith('-')) {
@@ -467,6 +534,19 @@ function parseArgs(argv) {
             }
             // "low" = low resolution (large d), "high" = high resolution (small d).
             args.resolution = { dmin: Math.min(lo, hi), dmax: Math.max(lo, hi) };
+        } else if (key === 'rad') args.rad = true;
+        else if (key === 'rad-minisig') {
+            const t = parseFloat(vals[0]);
+            if (!Number.isFinite(t) || t < 0) throw new Error('rad-minisig expects a non-negative number');
+            args.radMinIsig = t;
+        } else if (key === 'rad-early' || key === 'rad-late') {
+            const t = parseFloat(vals[0]);
+            if (!Number.isFinite(t) || t <= 0 || t >= 0.5) throw new Error(`${key} expects a fraction in (0, 0.5)`);
+            if (key === 'rad-early') args.radEarlyFrac = t; else args.radLateFrac = t;
+        } else if (key === 'rad-shells') {
+            const t = parseInt(vals[0], 10);
+            if (!Number.isFinite(t) || t < 2) throw new Error('rad-shells expects an integer >= 2');
+            args.radShells = t;
         }
         i++;
     }
@@ -662,6 +742,11 @@ async function main() {
         unit: sfacOpts.unit,
         chiral: args.chiral,
         quality: true,
+        rad: args.rad,
+        radMinIsig: args.radMinIsig,
+        radEarlyFrac: args.radEarlyFrac,
+        radLateFrac: args.radLateFrac,
+        radShells: args.radShells,
     });
     if (!result.ok) abortAnalysis(result);
 

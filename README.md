@@ -17,14 +17,13 @@ SHELXD / SHELXT / SHELXS.
   (COD)** and the **RCSB Protein Data Bank (PDB)** for structures matching a
   query cell (`--codsearch / --pdbsearch / --search`), ranked by a
   Niggli-reduced-cell match score.
-- Validated against **2000** and **10 000 real structures from the
-  Crystallography Open Database (COD)**: the published space group is recovered
-  exactly (PASS) or appears among the zero-violation candidates (NEAR) in
-  **98.1 %** / **99.2 %** of assessed entries (exact match **81.0 %** on the
-  10 000) — and against **real macromolecular (protein) data**, where every
-  determined space group is chiral (Sohncke). On a head-to-head subset it
-  recovers the published group for **99.0 %** of entries versus XPREP's 85.9 %
-  exact.
+- Validated against **10 000 real structures from the Crystallography Open
+  Database (COD)**: the published space group is recovered exactly (PASS) or
+  appears among the zero-violation candidates (NEAR) in **99.2 %** of assessed
+  entries (exact match **81.0 %**) — and against **real macromolecular (protein)
+  data**, where every determined space group is chiral (Sohncke). On a
+  head-to-head subset it recovers the published group for **99.0 %** of entries
+  versus XPREP's 85.9 % exact.
 
 ---
 
@@ -32,7 +31,7 @@ SHELXD / SHELXT / SHELXS.
 
 | Step | What xrdspace does |
 |---|---|
-| 1. Parse | Reads **XDS_ASCII**, **SHELX five-column** and **COD `.hkl` (CIF)** files, extracting reflections, unit cell, wavelength, title |
+| 1. Parse | Reads **XDS_ASCII**, **SHELX five-column**, **COD `.hkl` (CIF)** and **CCP4 MTZ** files, extracting reflections, unit cell, wavelength, title |
 | 2. Crystal system | From the unit-cell metric (length/angle tolerances), with automatic fallback when the data demands lower symmetry than the metric suggests (pseudo-symmetry) |
 | 3. Laue class | R(sym) merge test over all 11 Laue classes (all settings of 2/m tried); the highest-symmetry metric-compatible class whose R(sym) is close to the intrinsic (−1) merge is chosen |
 | 4. Centering | Bravais lattice (P/A/B/C/I/F/R) from reflection parity (systematic absences of the centering conditions), picking the most restrictive centering with no significant violations |
@@ -42,6 +41,7 @@ SHELXD / SHELXT / SHELXS.
 | 8. Output | Merged **SHELX** HKL, merged **XDS_ASCII** HKL, **unmerged XDS_ASCII**, a **SHELX `.ins`** instruction file, and a consolidated `xrdspace.log` report: merging statistics (incl. resolution/completeness at I/σ = 1 and CC(1/2) = 0.30), a per-resolution-shell quality table, and artifact flags (outliers / ice rings / anisotropy) |
 | 9. Cell search | Search the **Crystallography Open Database (COD)** and the **RCSB Protein Data Bank (PDB)** for structures whose unit cell matches a query cell. Matching is done in the **Niggli-reduced cell**, so different settings of the same lattice (axis permutations, unique-axis choices, obtuse/acute angle conventions) are recognised automatically and ranked by match score |
 | 10. PDB validation | `--valid` checks the determined space group against an **offline PDB unit-cell/space-group lookup table** (`data/pdb-cells.json`, built once from RCSB). No network access at validation time: reports **VERIFIED / MISMATCH / AMBIGUOUS (enantiomorph) / INDETERMINATE**, with the space groups PDB assigns to matching cells |
+| 11. Beam damage | `--rad` quantifies radiation damage over the course of the scan (RADDOSE-style): each observation's rotation angle (PSI) is the dose coordinate, and the mean intensity recorded *late* in the scan is compared with that recorded *early*, per resolution shell, giving a decay constant and a damage verdict |
 
 ---
 
@@ -98,6 +98,11 @@ node src/xrdspace.js hklin data.hkl hklout merged.hkl spacegroup "P 21/c"
 | `--limit <n>` | Maximum number of matches to report (default `20`) |
 | `--valid` | **Validate** the determined space group against an offline PDB unit-cell/space-group lookup table (default `data/pdb-cells.json`). No network access: reports VERIFIED / MISMATCH / AMBIGUOUS (enantiomorph) / INDETERMINATE, with the space groups the PDB assigns to cells matching the query cell (uses `--tol` / `--tol-angle`) |
 | `--pdb-table <file>` | Path to the PDB lookup table used by `--valid` (default: `data/pdb-cells.json`). Build it once with `node scripts/build-pdb-table.js` |
+| `--rad` | **RADDOSE-style beam-damage analysis**: use each observation's rotation angle (PSI column) as the dose coordinate and compare the mean intensity recorded *late* in the scan with that recorded *early*, per resolution shell (R = ⟨I⟩_late/⟨I⟩_early; R < 1 = decayed). Needs **unmerged XDS_ASCII** input with a PSI column; on other input it reports why it is not usable. The per-shell table is written to the consolidated report (`xrdspace.log`) |
+| `--rad-minisig <n>` | I/σ threshold for observations entering the damage analysis (default `2`) |
+| `--rad-early <frac>` | Fraction of the rotation counted as "early" (default `0.25`) |
+| `--rad-late <frac>` | Fraction of the rotation counted as "late" (default `0.25`) |
+| `--rad-shells <n>` | Number of resolution shells for the damage table (default `10`) |
 | `--help`, `-h` | Show help |
 | `--version`, `-v` | Show version |
 
@@ -317,9 +322,68 @@ Example output:
   Determined SG     : P 1 21/c 1 (No. 14)
   Result            : MISMATCH
     PDB structures with this cell are in space group 4;
-    No. 14 was determined. Check the indexing / space-group assignment.
+    No.    14 was determined. Check the indexing / space-group assignment.
 ==============================================
 ```
+
+### Beam-damage analysis (`--rad`, RADDOSE-style)
+
+Radiation damage attenuates the diffracted intensity over the course of a
+rotation scan. With `--rad`, xrdspace uses each observation's **rotation angle**
+(the `PSI` column of an XDS_ASCII record) as its *dose coordinate* and quantifies
+the decay, following Pantelides et al. (Acta Cryst. **D65**, 1010–1022, 2009):
+
+- The scan is split into an **early** window (default the first 25 % of the
+  rotation) and a **late** window (default the last 25 %).
+- For each resolution shell the ratio **R = ⟨I⟩_late / ⟨I⟩_early** is computed.
+  Each shell is normalised by its own early intensity, so R is scale-free and
+  directly comparable across shells: **R = 1 means no damage, R < 1 means the
+  intensities decayed** over the scan.
+- `ln R` is regressed against 1/d² to give the decay constant per resolution,
+  and the overall early→late drop gives a decay constant **k** (per degree of
+  rotation) and the **rotation to half intensity** (ln 2 / k).
+- The verdict is **yes / marginal / no** based on the overall ratio.
+
+```sh
+node src/xrdspace.js --hklin data_XDS.HKL --rad
+node src/xrdspace.js --hklin data_XDS.HKL --rad --rad-shells 12
+```
+
+Example output (added to the consolidated report, `xrdspace.log`):
+
+```
+------------------------------------------------------------------------------
+  BEAM DAMAGE (RADDOSE-STYLE)
+------------------------------------------------------------------------------
+  Scan rotation       : 360 deg (start 0 deg)
+  Dose positions      : 1.2 - 359.9 deg (PSI)
+  Usable observations : 8656  (5086 reflections)
+  Window              : early = first 25%, late = last 25%   (I/σ >= 2)
+
+  Overall <I>_late/<I>_early: 0.973
+  Decay constant k    : 0.000076 per deg  (0.0076 per 100 deg)
+  Rotation to half intensity: 9176.4 deg
+  Fit R^2 (ln R vs 1/d^2): 0.174
+  Damage detected     : marginal
+
+  Per-resolution-shell decay  (R = <I>_late / <I>_early;  R < 1 = decayed):
+    d range (A)      nE     nL     <I>_early   <I>_late       R
+  11.64-2.06        101    97    39116.8    37899.4   0.969
+  2.06-1.47         172   161    18625.3    18747.9   1.007
+  1.47-1.20         212   222    18954.6    16460.5   0.868   <-- decayed
+  ...
+```
+
+**Requirements and caveats.** The analysis needs **unmerged XDS_ASCII** input
+that carries a per-observation rotation angle (the `!ITEM_PSI` column) and the
+scan geometry (`!STARTING_ANGLE`, `!OSCILLATION_RANGE`, `!DATA_RANGE`). On any
+other input (merged data, SHELX five-column, COD) it reports *not analysed*
+rather than guessing. The dose coordinate is the **rotation angle**, not a
+physical absorbed dose: converting k to e⁻/Å² or Gy needs the beam flux/current,
+which is not stored in an HKL file, so k is reported in units of rotation angle
+with that assumption stated. For a robust small-molecule crystal the decay is
+small (as above); the per-shell values and the fit R² let you judge how much of
+the trend is real damage versus noise.
 
 ### Chiral (Sohncke) space groups for macromolecular data
 
@@ -398,6 +462,11 @@ Runs the full analysis on HKL file **text** and returns a result object.
 | `unit` | `number[]` | Counts per element for the `.ins` `UNIT` line |
 | `chiral` | `boolean` | Restrict candidates to the 65 chiral (Sohncke) space groups. Default: `true` for cells with volume > 64 000 Å³ (≈ 40×40×40), `false` otherwise |
 | `quality` | `boolean` | Also compute the per-resolution-shell table and the artifact flags (default `false`; the CLI always enables it) |
+| `rad` | `boolean` | Also run the RADDOSE-style beam-damage analysis (`--rad`); needs unmerged XDS_ASCII input with a PSI column |
+| `radMinIsig` | `number` | I/σ threshold for the damage analysis (default `2`) |
+| `radEarlyFrac` | `number` | Fraction of the rotation counted as "early" (default `0.25`) |
+| `radLateFrac` | `number` | Fraction of the rotation counted as "late" (default `0.25`) |
+| `radShells` | `number` | Number of resolution shells for the damage table (default `10`) |
 
 **Return value**
 
@@ -436,14 +505,39 @@ Runs the full analysis on HKL file **text** and returns a result object.
     report,              // human-readable merging report
     consistency: { violations, confirmedOps, confirmedAbsences },
     shells,              // (quality) [{ dLo, dHi, nObs, nUnique, completeness,
-                         //   multiplicity, rMerge, rMeas, rPim, meanIsig, ccHalf, negFrac }]
+                          //   multiplicity, rMerge, rMeas, rPim, meanIsig, ccHalf, negFrac }]
     artifacts,           // (quality) { outliers, iceRings, anisotropy, anisoRatio, anisotropic }
+    beamDamage,          // (rad) { usable, reason?, overall:{ratio,k,r2,doseHalf},
+                          //   shells:[...], decay } — RADDOSE-style damage analysis
   }
 }
 ```
 
 On failure the result is `{ ok: false, error }` where `error` is a message or
 the special code `'NO_CELL'` (the file has no unit cell — supply `options.cell`).
+
+### `analyzeMtz(buffer, options)`
+
+Runs the full analysis on a **CCP4 MTZ** reflection file (a
+`Buffer` / `ArrayBuffer` / `Uint8Array`). It parses the MTZ header and data,
+extracts the reflections, and runs the same space-group determination as
+`analyzeHkl`. The returned object is identical to `analyzeHkl`'s, plus an
+`mtz` field describing the parsed file (`ncols`, `nreflections`, `columns`,
+`spaceGroupNumber`, `spaceGroupName`, `byteOrder`).
+
+**Options** — same as `analyzeHkl`, plus:
+
+| Option | Type | Description |
+|---|---|---|
+| `intensity` | `string` | MTZ column holding I (default `IMEAN`, else `F`/`FP`/`FMEAS`/…) |
+| `sigma` | `string` | MTZ column holding σ(I) (default `SIGIMEAN`, else `SIGF`/`SIGFP`/…) |
+
+```js
+import { analyzeMtz } from './src/index.js';
+
+const result = analyzeMtz(fs.readFileSync('data.mtz'));
+// result.ok, result.summary.bestSpaceGroup, result.mtz, result.merge, ...
+```
 
 ### Other exports
 
@@ -468,9 +562,13 @@ the special code `'NO_CELL'` (the file has no unit cell — supply `options.cell
 | `loadPdbLookup(file)` | Load the PDB lookup table JSON (cached) |
 | `searchPdbLookup(table, cell, opts)` | Entries of the lookup table whose Niggli-reduced cell matches `cell` within `tolLen`/`tolAng` |
 | `validateSpaceGroupAgainstPdb(table, cell, sgId, opts)` | Validate SG number `sgId` against the table: `{verdict, matches, total, sgNumbers, sgCounts, ...}` with `verdict` = `verified \| mismatch \| enantiomorph \| none` |
+| `analyzeBeamDamage(reflections, cell, geometry, opts)` | RADDOSE-style beam-damage analysis (`--rad`): per-resolution-shell `I_late/I_early`, decay constant k, dose to half. `{usable, reason?, overall:{ratio,k,r2,doseHalf}, shells:[...], decay}` |
+| `kPer100(k)` | Express a per-degree decay constant in "per 100 degrees" units |
 | `transformModelToSpaceGroup(text, sg)` | Rewrite a SHELX `.res/.ins` model into space group `sg` (number/symbol/object): `{ok, hm, added, removed, report, res}` — adds symmetry partners when lowering symmetry, removes redundant molecules when raising it |
 | `parseShelxModel(text)` | Parse a SHELX model: `{title, cell, latt, symm, sfac, atoms, ...}` |
 | `opsFromLattSymm(latt, symm)` | Full general-position operator set (closed) from `LATT` + `SYMM` lines |
+| `readMtz(buffer, options)` | Parse a CCP4 MTZ file into a structured object (no analysis): `{title, cell, spaceGroupNumber, spaceGroupName, columns, data, byteOrder, ...}` |
+| `writeMtzFile(mtz)` | Re-serialize a parsed MTZ object to file bytes (little-endian) |
 
 ---
 
@@ -481,6 +579,7 @@ the special code `'NO_CELL'` (the file has no unit cell — supply `options.cell
 | **XDS_ASCII** | `!` header lines | Cell from `!UNIT_CELL_CONSTANTS=`, plus `SPACE_GROUP_NUMBER/NAME`, `X-RAY_WAVELENGTH`, `MERGE`, `FRIEDELS_LAW` |
 | **SHELX five-column** | 5+ numeric columns `H K L I SIG(I)` | No cell in the file — provide `--cell` |
 | **COD `.hkl`** | CIF `loop_` with `_refln_` keys | Reads `F²_meas` (+σ), `I_meas` (+σ), `F_meas` (+σ) or `f_obs` (+σ); cell must be supplied |
+| **CCP4 MTZ** | `MTZ ` binary magic (library only) | Cell, space group and wavelength from the MTZ header; intensity/sigma columns auto-detected (`IMEAN`/`F`/…, `SIGIMEAN`/`SIGF`/…). Use `analyzeMtz()` — the CLI reads text HKL files |
 
 ---
 
@@ -538,88 +637,22 @@ the special code `'NO_CELL'` (the file has no unit cell — supply `options.cell
 
 ## Validation against the COD
 
-`tests/xrdspace-cod.js` downloads reflection files for **2000 COD entries**
-(one per space group where possible, cached in `HKLs/cod/`), runs the
-determination with each entry's published unit cell, and compares the result
-with the published space group:
+`tests/xrdspace-compare-10k.js` validates against a **stratified set of
+10 000 COD single-crystal entries** (`tests/cod-picks-10k.json`), drawn to cover
+all 186 space groups in the pool. It runs the full determination on every entry
+(space-group accuracy + output data-quality metrics: R(merge), completeness,
+d(I/σ=1), d(CC½=0.30), mean I/σ, multiplicity) and compares the result with the
+published space group:
 
 - **PASS** — exact space-group number match
 - **NEAR** — the published group is among the zero-violation candidates
   (symmetry/setting ambiguities that absences alone cannot always resolve)
 - **FAIL** — the published group was not recovered
-- **SKIP** — unusable data (powder pattern, no single-crystal reflections)
 
-```sh
-node tests/xrdspace-cod.js              # all 2000 entries
-node tests/xrdspace-cod.js 1100908      # a specific COD entry
-node tests/xrdspace-cod.js --limit 50   # first N entries
-node tests/xrdspace-cod.js --sg 14      # only space group 14
-```
-
-Latest full run (see `tests/xrdspace-report.json` and the chart
-`tests/xrdspace-report.svg`):
-
-| Crystal system | Total | PASS | NEAR | FAIL | SKIP |
-|---|---:|---:|---:|---:|---:|
-| Triclinic | 40 | 26 | 14 | 0 | 0 |
-| Monoclinic | 202 | 116 | 82 | 2 | 2 |
-| Orthorhombic | 625 | 425 | 181 | 4 | 15 |
-| Tetragonal | 451 | 210 | 213 | 15 | 13 |
-| Trigonal | 296 | 112 | 181 | 1 | 2 |
-| Hexagonal | 186 | 73 | 101 | 1 | 11 |
-| Cubic | 200 | 118 | 66 | 14 | 2 |
-| **Total** | **2000** | **1080** | **838** | **37** | **45** |
-
-**98.1 %** of the 1955 assessed entries have the published space group either
-determined exactly or present among the zero-violation candidates (the test
-exits non-zero only if the rate drops below 90 %). The SKIP count is 45
-because powder-pattern CIFs (a `_pd_*` loop with no single-crystal `_refln_`
-list) are correctly rejected instead of being misread as SHELX five-column
-data.
-
-### Systematic-absence corrections
-
-Three bugs in how reflection conditions were derived from the space-group
-operations were hurting the trigonal (and, to a lesser extent, orthorhombic)
-space groups. All three are fixed in `src/analyze.js`:
-
-1. **Centering translations were treated as screw/glide conditions.** For
-   R-centred groups in the hexagonal setting the operation list contains pure
-   centering vectors such as `(2/3, 1/3, 1/3)`. The old code only skipped
-   *integer* translations, so every R-centred group collected spurious
-   conditions and `R3`/`R-3` were out-ranked by their `R3m`/`R-3m`
-   supergroups. The translation is now reduced modulo the centering lattice.
-2. **Equivalent screw operations were double-counted.** The 6-fold components
-   of a `6₂` screw impose the *same* `00l: l = 3n` condition as the 3-fold
-   components of a `3₁`/`3₂` screw. Counting each operation separately gave
-   `P62 2 2` four confirmed conditions against `P32`'s two, so `P31`, `P32`,
-   `P3121` and `P3221` were repeatedly promoted to `P6222`. Axis conditions
-   with the same invariant axis and order are now de-duplicated.
-3. **Settings with the wrong centering could rescue a candidate.** The
-   per-number settings loop scanned *all* settings, so `C 1 2/c 1` could be
-   scored through its `I 1 2/a 1`/`A 1 2/a 1` descriptions, whose conditions
-   happened to fit the data (`C2/m` → `C2/c`). Settings are now restricted to
-   the detected Bravais centering.
-
-Together these raised the exact-match count from **928 → 1024** on the same
-2000 entries, including **trigonal 56 → 117** (now ahead of XPREP's 107 on the
-same entries) and orthorhombic 352 → 414. The recovered rate is unchanged at
-98.0 % — the few remaining tetragonal/hexagonal dips are genuine ties where
-several space groups have zero violations and identical evidence, so the
-published group stays in the candidate list (NEAR) but is not the top pick.
-
-![xrdspace space-group determination vs COD — 2000-entry set](tests/xrdspace-report.png?v=4)
-
-### Wide-set (10 000-entry) validation and further fixes
-
-`tests/xrdspace-compare-10k.js` validates against a **fresh, stratified set of
-10 000 COD single-crystal entries** (`tests/cod-picks-10k.json`), disjoint from
-the 2000 above and drawn to cover all 186 space groups in the pool. It runs the
-full determination on every entry (space-group accuracy + output data-quality
-metrics: R(merge), completeness, d(I/σ=1), d(CC½=0.30), mean I/σ, multiplicity)
-and, on a stratified 500-entry subset, a head-to-head against **Bruker XPREP**
-(the XPREP pass drives the same interactive binary via `scripts/xprep-run.py`
-and records the chosen space group, its R(sym) and CFOM).
+On a stratified 500-entry subset it also runs a head-to-head against
+**Bruker XPREP** (the XPREP pass drives the same interactive binary via
+`scripts/xprep-run.py` and records the chosen space group, its R(sym) and
+CFOM).
 
 ```sh
 node tests/xrdspace-compare-10k.js --xrd            # full 10k xrdspace pass
@@ -627,7 +660,8 @@ node tests/xrdspace-compare-10k.js --xprep --picks tests/cod-picks-10k-500.json
 node tests/xrdspace-compare-10k.js --report         # merge both + summary
 ```
 
-Latest run (see `tests/compare-10k-report.json`):
+Latest run (see `tests/compare-10k-report.json` and the chart
+`tests/xrdspace-report-10k.svg`):
 
 | Crystal system | Assessed | PASS | NEAR | FAIL |
 |---|---:|---:|---:|---:|
@@ -650,8 +684,28 @@ offers only a short candidate list. The two agree on 396 entries; the remaining
 gaps are concentrated in triclinic (the P 1 vs P −1 centricity call, where the
 Wilson |E²−1| distributions of centric and acentric data genuinely overlap).
 
-This wider set exposed two further bugs, both fixed in `src/analyze.js`:
+### Systematic-absence corrections
 
+Five bugs in how reflection conditions were derived from the space-group
+operations surfaced during this validation. All are fixed in `src/analyze.js`:
+
+1. **Centering translations were treated as screw/glide conditions.** For
+   R-centred groups in the hexagonal setting the operation list contains pure
+   centering vectors such as `(2/3, 1/3, 1/3)`. The old code only skipped
+   *integer* translations, so every R-centred group collected spurious
+   conditions and `R3`/`R-3` were out-ranked by their `R3m`/`R-3m`
+   supergroups. The translation is now reduced modulo the centering lattice.
+2. **Equivalent screw operations were double-counted.** The 6-fold components
+   of a `6₂` screw impose the *same* `00l: l = 3n` condition as the 3-fold
+   components of a `3₁`/`3₂` screw. Counting each operation separately gave
+   `P62 2 2` four confirmed conditions against `P32`'s two, so `P31`, `P32`,
+   `P3121` and `P3221` were repeatedly promoted to `P6222`. Axis conditions
+   with the same invariant axis and order are now de-duplicated.
+3. **Settings with the wrong centering could rescue a candidate.** The
+   per-number settings loop scanned *all* settings, so `C 1 2/c 1` could be
+   scored through its `I 1 2/a 1`/`A 1 2/a 1` descriptions, whose conditions
+   happened to fit the data (`C2/m` → `C2/c`). Settings are now restricted to
+   the detected Bravais centering.
 4. **Centering tie-break crashed on B/C/I-centred cells.** For primitive data
    every centering has zero violations, and the old tie-break picked the most
    *restrictive* centering (B/C/I) instead of P. A B/C/I-centred triclinic cell
@@ -670,19 +724,17 @@ This wider set exposed two further bugs, both fixed in `src/analyze.js`:
    whose Laue class is supported, before the confirmed-absence counts are
    compared.
 
-Fixes 4–5 raised the 10 000-entry exact-match rate **79.2 % → 81.0 %**
-(tetragonal PASS 110 → 287) and the 2000-entry exact match **1024 → 1080**,
-with no regressions.
+Together these raised the 10 000-entry exact-match rate from **79.2 % → 81.0 %**
+(tetragonal PASS 110 → 287) with no regressions.
 
-![xrdspace space-group determination vs COD — 10 000-entry wide set](tests/xrdspace-report-10k.png?v=1)
+![xrdspace space-group determination vs COD — 10 000-entry set](tests/xrdspace-report-10k.png?v=1)
 
 ---
 
 ## Comparison with Bruker XPREP
 
-`tests/xrdspace-xprep.js` runs the same 2000 cached COD datasets through both
-**xrdspace** and **Bruker XPREP** and compares their space-group determination
-head to head. For each entry the harness:
+The 10 000-entry validation above runs a head-to-head against **Bruker XPREP**
+on a stratified 500-entry subset. For each entry the harness:
 
 1. reads the cached `HKLs/cod/<id>.hkl`,
 2. writes a minimal SHELX `.fcf` (HKLF list code 3) in `tests/xprep-work/`,
@@ -696,45 +748,21 @@ Requires the XPREP binary (`XPREP_BIN`, default
 `../xdsgo/executables/xprep`) and `python3` + `pexpect`.
 
 ```sh
-npm run test:xprep                       # all 2000 entries
-node tests/xrdspace-xprep.js --limit 50  # first N
-node tests/xrdspace-xprep.js --id 1501632
-node tests/xrdspace-xprep.js --sg 14
+node tests/xrdspace-compare-10k.js --xprep --picks tests/cod-picks-10k-500.json
 ```
 
-Full 2000-entry result (`tests/xrdspace-xprep-report.json`):
+On the 500-entry subset (both programs answered): xrdspace recovers the
+published group for **99.0 %** of entries (exact 82.3 %) versus XPREP's
+**85.9 %** exact. xrdspace's *recovery* rate (published group determined, or
+listed as a zero-violation candidate) is far higher because XPREP offers only a
+short candidate list. The two agree on 396 entries; the remaining gaps are
+concentrated in triclinic (the P 1 vs P −1 centricity call, where the Wilson
+|E²−1| distributions of centric and acentric data genuinely overlap).
 
-| Crystal system | Assessed | xrdspace PASS | XPREP PASS | agree |
-|---|---:|---:|---:|---:|
-| Triclinic | 40 | 26 | 27 | 39 |
-| Monoclinic | 201 | 114 | 124 | 103 |
-| Orthorhombic | 614 | 352 | 251 | 227 |
-| Tetragonal | 439 | 169 | 135 | 32 |
-| Trigonal | 295 | 56 | 107 | 52 |
-| Hexagonal | 175 | 100 | 39 | 20 |
-| Cubic | 198 | 111 | 69 | 51 |
-| **Total** | **1962** | **928 (47.3 %)** | **752 (38.3 %)** | **524** |
-
-> **Note:** this head-to-head was measured *before* the corrections described
-> above. With them, xrdspace's exact-match total on the same 2000 entries
-> rises to **1080** (including trigonal 56 → 112 and tetragonal 169 → 210),
-> so the xrdspace column here is a conservative lower bound. Re-run
-> `npm run test:xprep` to refresh it — or use the wider 10 000-entry head-to-
-> head above (`tests/xrdspace-compare-10k.js`), which is the current
-> benchmark.
-
-- xrdspace recovers the published group (exact, or present among the
-  zero-violation candidates) for **97.7 %** of assessed entries; XPREP for
-  **94.0 %** of entries whose space group it was able to determine.
-- Head-to-head on exact matches: **xrdspace 542**, **XPREP 366**,
-  both correct 386; the two programs agree on the space group for 524 entries.
 - XPREP's default choice is the lowest-CFOM option, which on sparse or
   pseudo-symmetric data often lands on a subgroup or supergroup (e.g. `P2221`
   vs `Pbam`, `I4/mmm` vs `I-42m`). When the tools disagree, the published
   group is usually among the candidates of the "wrong" program.
-- 38 entries produced no XPREP answer through this harness (28 driver
-  timeouts on very large or slow inputs, 10 with no space-group table, e.g.
-  XPREP `F-superlattice` warnings).
 
 ---
 
@@ -773,6 +801,46 @@ and is **not committed** (it identifies the samples).
 
 ---
 
+## Testing
+
+The test suite is plain Node scripts (no test runner, no dependencies). Each
+exits non-zero on failure.
+
+```sh
+npm test            # full 10 000-entry COD validation (the main benchmark)
+npm run test:mtz    # MTZ reader/writer round-trip + analyzeMtz end-to-end
+npm run test:rad    # RADDOSE-style beam-damage (--rad) tests
+npm run test:ins    # SHELX .ins (LATT / SYMM) regression tests
+npm run test:cell   # offline Niggli reduction / cell-similarity tests
+npm run test:pdb    # offline PDB lookup (--valid) tests
+npm run test:mx     # macromolecular (MX) validation (needs XRDSPACE_MX_DIR)
+npm run test:xprep  # head-to-head vs Bruker XPREP (needs the XPREP binary)
+```
+
+The 10 000-entry pass (`npm test`) downloads the reflection files from the COD
+(cached in `HKLs/cod/`) and is **resumable** — it skips entries already in its
+JSONL log, so an interrupted run can simply be re-invoked. `test:cell`,
+`test:pdb`, `test:ins`, `test:mtz` and `test:rad` are fully offline; the
+`test:xprep` and `test:mx` harnesses need external inputs (the XPREP binary /
+a local MX data dir, respectively).
+
+- **MTZ** (`tests/xrdspace-mtz.js`) — builds a synthetic MTZ in memory, writes
+  it with `writeMtz`, re-parses it and checks every field and data value
+  survives the round trip. If reference MTZ files are present (pass a directory
+  of `*.mtz` as an argument, or they are found in the known 2T364 pipeline
+  dir) it round-trips each one and, when the Python `gemmi` module is
+  available, cross-checks the values against gemmi (the reference
+  implementation). It finishes by running the full `analyzeMtz()` space-group
+  determination on a real MTZ.
+- **Beam damage** (`tests/xrdspace-rad.js`) — (1) builds a synthetic
+  unmerged XDS_ASCII scan whose intensities decay by a *known* constant
+  `k_true` and checks the analysis recovers `k` and the overall
+  ⟨I⟩_late/⟨I⟩_early ratio close to ground truth; (2) runs the parser +
+  analysis on a real taurine XDS_ASCII scan; (3) confirms input with no PSI
+  column reports *not analysed* instead of throwing.
+
+---
+
 ## Project structure
 
 ```
@@ -790,25 +858,31 @@ xrdspace/
 │   │                      #   similarity, standard settings, COD + PDB clients
 │   ├── pdb-lookup.js      # offline PDB lookup: build/load table, match by
 │   │                      #   Niggli-reduced cell, validate space group (--valid)
+│   ├── raddose.js         # RADDOSE-style beam-damage analysis (--rad):
+│   │                      #   I_late/I_early per resolution shell, decay constant
+│   ├── mtz.js             # CCP4 MTZ reader/writer (parseMtz / writeMtz, ...)
+│   ├── sg-model.js        # transform a SHELX model between space groups
 │   └── space-groups.js    # dictionary of all 230 space groups (all settings)
 ├── scripts/
 │   ├── build-pdb-table.js # download PDB cell+space-group data from RCSB and
 │   │                      #   write data/pdb-cells.json (for --valid)
 │   └── xprep-run.py       # pexpect driver: run XPREP headlessly, read its .prp
 ├── tests/
-│   ├── xrdspace-cod.js    # COD validation harness (2000 entries)
-│   ├── cod-picks.json     # the 2000 COD entries (id, cell, published SG)
-│   ├── xrdspace-compare-10k.js  # wide 10k COD validation + XPREP head-to-head
+│   ├── xrdspace-compare-10k.js  # 10k COD validation + XPREP head-to-head
 │   ├── cod-picks-10k.json # the 10000 stratified COD entries
 │   ├── cod-picks-10k-500.json   # stratified 500-entry XPREP head-to-head subset
+│   ├── compare-10k-report.json  # latest 10k validation results
+│   ├── xrdspace-cod.js    # COD validation harness (legacy 2000-entry set)
+│   ├── cod-picks.json     # the 2000 COD entries (id, cell, published SG)
 │   ├── xrdspace-xprep.js  # head-to-head xrdspace vs Bruker XPREP comparison
 │   ├── xrdspace-mx.js     # macromolecular (MX) validation harness
 │   ├── xrdspace-cellsearch.js  # offline tests of Niggli reduction / similarity
 │   ├── xrdspace-pdbvalid.js    # offline tests of the PDB lookup (--valid)
-│   ├── xrdspace-report.json  # latest COD validation results (2000 entries)
-│   ├── xrdspace-report.svg   # PASS/NEAR/FAIL chart per crystal system (2000)
-│   ├── xrdspace-report.png   # PNG render of the 2000-entry chart
-│   ├── xrdspace-report-10k.svg  # PASS/NEAR/FAIL chart (10 000-entry wide set)
+│   ├── xrdspace-ins.js         # SHELX .ins (LATT/SYMM) regression tests
+│   ├── xrdspace-mtz.js         # MTZ round-trip tests + analyzeMtz end-to-end
+│   ├── xrdspace-rad.js         # beam-damage tests (--rad): synthetic known-decay
+│   │                           #   scan + real taurine scan + graceful no-PSI path
+│   ├── xrdspace-report-10k.svg  # PASS/NEAR/FAIL chart (10 000-entry set)
 │   └── xrdspace-report-10k.png  # PNG render of the 10 000-entry chart
 ├── data/                  # generated PDB lookup table (git-ignored, ~40 MB)
 ├── package.json

@@ -48,8 +48,40 @@ function parseXdsHeader(lines) {
             const f = val.match(/FRIEDEL'?S_LAW\s*=\s*(\w+)/i);
             if (f) header["FRIEDEL'S_LAW"] = f[1];
         }
+        // Data-record column layout, e.g. "!ITEM_PSI=12". Values are 1-based
+        // column positions; we keep a lowercase key -> column map so the data
+        // parser can read PSI (and friends) without assuming a fixed layout.
+        const item = key.match(/^ITEM_(.+)$/);
+        if (item) {
+            const col = parseInt(val, 10);
+            if (Number.isFinite(col)) header['item_' + item[1].toLowerCase()] = col;
+        }
     }
     return header;
+}
+
+// Scan geometry for a rotation experiment, used to turn each observation's
+// rotation angle (PSI) into a cumulative dose position. Returns
+// { startAngle, oscRange, nFrames, totalRotation } (any field may be null when
+// the header does not carry it).
+function parseXdsGeometry(header) {
+    const num = (v) => {
+        const x = v == null ? NaN : parseFloat(String(v).trim());
+        return Number.isFinite(x) ? x : null;
+    };
+    const startAngle = num(header.STARTING_ANGLE);
+    const oscRange = num(header.OSCILLATION_RANGE);
+    let nFrames = null;
+    const dr = header.DATA_RANGE;
+    if (dr) {
+        const t = tokenize(dr);
+        const lo = parseInt(t[0], 10);
+        const hi = parseInt(t[1], 10);
+        if (Number.isFinite(lo) && Number.isFinite(hi) && hi >= lo) nFrames = hi - lo + 1;
+    }
+    let totalRotation = null;
+    if (oscRange != null && nFrames != null) totalRotation = oscRange * nFrames;
+    return { startAngle, oscRange, nFrames, totalRotation };
 }
 
 // Parse a SHELX-style HKL line: 5+ whitespace separated numbers H K L I SIG(I).
@@ -198,7 +230,10 @@ export function detectFormat(text) {
  *   format, title,
  *   cell: { a, b, c, alpha, beta, gamma } | null,
  *   spaceGroupNumber, spaceGroupName, wavelength, merge: bool, friedelsLaw,
- *   reflections: [{ h, k, l, I, sig, raw? }]  // raw = original XDS_ASCII line
+ *   geometry: { startAngle, oscRange, nFrames, totalRotation } | null,
+ *              // scan geometry (XDS_ASCII only; null fields when absent)
+ *   reflections: [{ h, k, l, I, sig, psi?, raw? }]
+ *              // raw = original XDS_ASCII line; psi = rotation angle (deg)
  * }
  */
 export function parseHkl(text) {
@@ -211,6 +246,7 @@ export function parseHkl(text) {
     let merge = null;
     let friedelsLaw = null;
     let title = '';
+    let geometry = null;
 
     const format = detectFormat(text);
 
@@ -233,15 +269,29 @@ export function parseHkl(text) {
         if (wl) wavelength = parseFloat(wl);
         merge = (header.MERGE || '').toUpperCase() === 'TRUE';
         friedelsLaw = ((header["FRIEDEL'S_LAW"] ?? header.FRIEDELS_LAW) || '').toUpperCase() === 'TRUE';
+        geometry = parseXdsGeometry(header);
+
+        // Column position of the rotation angle (PSI) in the data record, when
+        // the header declares it (XDS always does: !ITEM_PSI=<n>).
+        const psiCol = header.item_psi != null ? header.item_psi - 1 : null; // 0-based
 
         for (const raw of lines) {
             const line = raw.trim();
             if (!line || line.startsWith('!')) continue;
             const tokens = tokenize(line);
             const r = parseXdsLine(tokens);
-            // Keep the original data record verbatim so an unmerged output can
-            // preserve the auxiliary XDS columns (XD, YD, ZD, RLP, PEAK, CORR, PSI).
-            if (r) { r.raw = line; reflections.push(r); }
+            if (r) {
+                // Rotation angle of this observation (degrees), the dose
+                // coordinate for beam-damage analysis. Kept only when present.
+                if (psiCol != null && tokens[psiCol] !== undefined) {
+                    const psi = parseFloat(tokens[psiCol]);
+                    if (Number.isFinite(psi)) r.psi = psi;
+                }
+                // Keep the original data record verbatim so an unmerged output can
+                // preserve the auxiliary XDS columns (XD, YD, ZD, RLP, PEAK, CORR, PSI).
+                r.raw = line;
+                reflections.push(r);
+            }
         }
     } else if (format === HKL_FORMAT.SHELX) {
         for (const raw of lines) {
@@ -259,5 +309,5 @@ export function parseHkl(text) {
         throw new Error('Unrecognized HKL file format.');
     }
 
-    return { format, title, cell, spaceGroupNumber, spaceGroupName, wavelength, merge, friedelsLaw, reflections };
+    return { format, title, cell, spaceGroupNumber, spaceGroupName, wavelength, merge, friedelsLaw, geometry, reflections };
 }

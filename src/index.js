@@ -17,6 +17,7 @@ import { buildLaueGroups, sgLaueClass } from './laue.js';
 import { analyzeSpaceGroup, crystalSystemFromCell, scoreSpaceGroup, isCentrosymmetric, laueClassOfSg, isSohncke, cellVolume } from './analyze.js';
 import { mergeReflections, computeMergeStatistics, resolutionShellStats, artifactReport, writeShelxHkl, writeXdsAscii, writeXdsAsciiUnmerged, buildMergingReport, dSpacing } from './merge.js';
 import { parseOperation, LATT_CENTERING, shelxSymmGenerators } from './op-math.js';
+import { analyzeBeamDamage } from './raddose.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
@@ -177,6 +178,13 @@ function shelxSymmOps(ops, centrosymmetric, lattType = 1) {
  *                                          // (Sohncke) space groups. Default: true
  *                                          // for macromolecular cells (volume >
  *                                          // 64000 A^3, ~40x40x40), false otherwise.
+ *   quality: boolean,                      // per-shell table + artifact flags
+ *   rad: boolean,                          // RADDOSE-style beam-damage analysis
+ *                                          // (needs unmerged XDS_ASCII with PSI)
+ *   radMinIsig: number,                    // I/sigma threshold for the fit (2)
+ *   radEarlyFrac: number,                  // fraction of rotation = "early" (0.25)
+ *   radLateFrac: number,                   // fraction of rotation = "late"  (0.25)
+ *   radShells: number,                     // number of resolution shells (10)
  * }
  * Returns { ok, error?, summary, best, merge }.
  */
@@ -315,6 +323,17 @@ export function analyzeParsed(parsed, options = {}) {
         if (options.quality) {
             merge.shells = resolutionShellStats(reflections, usedLaueOps, cell, { centering: usedCentering });
             merge.artifacts = artifactReport(reflections, usedLaueOps, cell);
+        }
+        // RADDOSE-style beam-damage analysis: per-observation rotation angle
+        // (PSI) is the dose coordinate. Needs unmerged XDS_ASCII input; on any
+        // other input it reports why it is not usable.
+        if (options.rad) {
+            merge.beamDamage = analyzeBeamDamage(reflections, cell, parsed.geometry, {
+                minIsig: options.radMinIsig,
+                earlyFrac: options.radEarlyFrac,
+                lateFrac: options.radLateFrac,
+                shells: options.radShells,
+            });
         }
         // Consistency of the (possibly forced) space group with the data.
         const fullSG = usedSG && usedSG.id ? sgData.find(g => g.id === usedSG.id) : null;
@@ -467,3 +486,6 @@ export {
     searchPdbLookup,
     validateSpaceGroupAgainstPdb,
 } from './pdb-lookup.js';
+
+// RADDOSE-style beam-damage analysis (--rad).
+export { analyzeBeamDamage, kPer100 } from './raddose.js';
