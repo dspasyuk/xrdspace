@@ -15,7 +15,7 @@ import { parseHkl } from './hkl-parser.js';
 import { parseMtz, writeMtz, getReflections } from './mtz.js';
 import { buildLaueGroups, sgLaueClass } from './laue.js';
 import { analyzeSpaceGroup, crystalSystemFromCell, scoreSpaceGroup, isCentrosymmetric, laueClassOfSg, isSohncke, cellVolume } from './analyze.js';
-import { mergeReflections, computeMergeStatistics, resolutionShellStats, artifactReport, writeShelxHkl, writeXdsAscii, writeXdsAsciiUnmerged, buildMergingReport, dSpacing } from './merge.js';
+import { mergeReflections, computeMergeStatistics, resolutionShellStats, artifactReport, writeShelxHkl, writeShelxHklUnmerged, writeXdsAscii, writeXdsAsciiUnmerged, buildMergingReport, dSpacing } from './merge.js';
 import { parseOperation, LATT_CENTERING, shelxSymmGenerators } from './op-math.js';
 import { analyzeBeamDamage } from './raddose.js';
 
@@ -304,7 +304,13 @@ export function analyzeParsed(parsed, options = {}) {
                 friedelsLaw: parsed.friedelsLaw,
             }),
             inputWasMerged: parsed.merge,
-            shelxHkl: writeShelxHkl(m.merged),
+            // Default SHELX output: UNMERGED. SHELXL (HKLF 4) does its own
+            // symmetry averaging and scaling, so it must receive the raw
+            // observations; a pre-merged file would double-merge the data.
+            shelxHkl: writeShelxHklUnmerged(reflections),
+            // Merged SHELX five-column text, kept for programs that expect a
+            // pre-merged dataset (e.g. SHELXD/SHELXT in some workflows).
+            shelxHklMerged: writeShelxHkl(m.merged),
             xdsAscii: writeXdsAscii(m.merged, {
                 outputFile: options.xdsOutput || 'structure_xds.hkl',
                 cell,

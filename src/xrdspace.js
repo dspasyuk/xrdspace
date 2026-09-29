@@ -32,7 +32,10 @@ Usage:
 
 Input / output:
   --hklin <file>      Input HKL file (XDS_ASCII or SHELX five-column format)
-  --hklout <file>     Output merged HKL file, SHELX format (default: <input>_merged.hkl)
+  --hklout <file>     Output UNMERGED HKL file, SHELX format (default: <input>_shelx.hkl).
+                      SHELX (HKLF 4) does its own merging, so the raw observations
+                      are written; a merged SHELX file is also available in the API
+                      as merge.shelxHklMerged.
   --xdsout <file>     Output merged HKL file, XDS_ASCII format (default: <input>_xds.hkl)
   --unmergedout <file>  Output UNMERGED HKL file, XDS_ASCII format (MERGE=FALSE),
                         keeping all observations (default: <input>_unmerged.hkl)
@@ -787,10 +790,10 @@ async function main() {
     // Write the corrected/merged HKL files. With --no-write we analyse only
     // and leave the filesystem untouched.
     if (result.merge && !args.noWrite) {
-        const shelxPath = path.resolve(args.hklout || path.join(dir, base + '_merged.hkl'));
+        const shelxPath = path.resolve(args.hklout || path.join(dir, base + '_shelx.hkl'));
         const xdsPath = path.resolve(args.xdsout || path.join(dir, base + '_xds.hkl'));
         const unmergedPath = path.resolve(args.unmergedOut || path.join(dir, base + '_unmerged.hkl'));
-        const insPath = path.resolve(args.hklout ? args.hklout.replace(/\.hkl$/i, '.ins') : path.join(dir, base + '_merged.ins'));
+        const insPath = path.resolve(args.hklout ? args.hklout.replace(/\.hkl$/i, '.ins') : path.join(dir, base + '_shelx.ins'));
         // Keep the XDS header OUTPUT_FILE consistent with the written file.
         result.merge.xdsAscii = result.merge.xdsAscii.replace(
             /!OUTPUT_FILE=[^\n]*/,
@@ -801,7 +804,7 @@ async function main() {
         fs.writeFileSync(shelxPath, result.merge.shelxHkl, 'utf8');
         fs.writeFileSync(xdsPath, result.merge.xdsAscii, 'utf8');
         fs.writeFileSync(unmergedPath, result.merge.unmergedXdsAscii, 'utf8');
-        outputFiles.push({ path: shelxPath, note: '(SHELX format, ready for SHELXD/SHELXT)' });
+        outputFiles.push({ path: shelxPath, note: '(UNMERGED SHELX format, ready for SHELXL/SHELXT)' });
         outputFiles.push({ path: xdsPath, note: '(merged XDS_ASCII)' });
         outputFiles.push({ path: unmergedPath, note: '(UNMERGED XDS_ASCII, all observations)' });
         if (result.merge.inputWasMerged) {

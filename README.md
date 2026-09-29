@@ -78,7 +78,7 @@ node src/xrdspace.js hklin data.hkl hklout merged.hkl spacegroup "P 21/c"
 | Option | Description |
 |---|---|
 | `--hklin <file>` | Input HKL file (XDS_ASCII, SHELX five-column, or COD `.hkl`) |
-| `--hklout <file>` | Output merged HKL file in **SHELX format** (default: `<input>_merged.hkl`) |
+| `--hklout <file>` | Output **unmerged** HKL file in **SHELX format** (default: `<input>_shelx.hkl`). SHELX (HKLF 4) does its own merging, so the raw observations are written |
 | `--xdsout <file>` | Output merged HKL file in **XDS_ASCII format** (default: `<input>_xds.hkl`) |
 | `--unmergedout <file>` | Output **unmerged** HKL file in **XDS_ASCII format** (`MERGE=FALSE`), keeping every observation (default: `<input>_unmerged.hkl`) |
 | `--log <file>` | Path for the consolidated, formatted report. The report is **always** written; default `xrdspace.log` next to the input file |
@@ -209,10 +209,10 @@ node src/xrdspace.js --hklin data.hkl \
 ------------------------------------------------------------------------------
   OUTPUT FILES
 ------------------------------------------------------------------------------
-  data_merged.hkl  (SHELX format, ready for SHELXD/SHELXT)
+  data_shelx.hkl  (UNMERGED SHELX format, ready for SHELXL/SHELXT)
   data_xds.hkl  (merged XDS_ASCII)
   data_unmerged.hkl  (UNMERGED XDS_ASCII, all observations)
-  data_merged.ins  (SHELX instructions, matching cell/space group)
+  data_shelx.ins  (SHELX instructions, matching cell/space group)
   xrdspace.log  (this report)
 
 ==============================================================================
@@ -407,10 +407,10 @@ candidates to the Sohncke groups when the **unit-cell volume exceeds
 
 | File | Format | Use |
 |---|---|---|
-| `<input>_merged.hkl` | SHELX five-column `H K L I SIG(I)` | Feed directly to **SHELXD / SHELXT / SHELXS** |
+| `<input>_shelx.hkl` | **Unmerged** SHELX five-column `H K L I SIG(I)` (all observations, no symmetry averaging) | Feed directly to **SHELXL / SHELXT / SHELXS** — SHELX (HKLF 4) does its own merging, so the raw data is written |
 | `<input>_xds.hkl` | Merged XDS_ASCII (`MERGE=TRUE`, `FRIEDEL'S_LAW=TRUE`) with cell, space group, wavelength and resolution-range header | Re-integration / further processing |
 | `<input>_unmerged.hkl` | **Unmerged** XDS_ASCII (`MERGE=FALSE`, labelled `UNMERGED (all observations)`) with cell, space group, wavelength and resolution-range header. XDS_ASCII input records are copied verbatim (auxiliary `XD`, `YD`, `ZD`, `RLP`, `PEAK`, `CORR`, `PSI` columns preserved); other formats are written as 12-column records | Programs that prefer redundancy — e.g. **Phenix** (`phenix.refine` / `phenix.xtriage`) and anomalous-data work. **MOLREP** usually takes the merged file |
-| `<input>_merged.ins` | SHELX instruction file: `TITL`, `CELL`, `LATT` (sign encodes centrosymmetry), `SYMM` (generating operations, one per inversion pair for centric groups), `SFAC`, `UNIT`, `HKLF 4`, `TREF 50` | Structure solution with SHELXT |
+| `<input>_shelx.ins` | SHELX instruction file: `TITL`, `CELL`, `LATT` (sign encodes centrosymmetry), `SYMM` (generating operations, one per inversion pair for centric groups), `SFAC`, `UNIT`, `HKLF 4`, `TREF 50` | Structure solution with SHELXT |
 | `xrdspace.log` | Consolidated aligned text report: input/cell, space-group determination, Laue table, candidates, merging statistics, optional PDB validation, and the output-file list (no duplicated blocks) | Archive the analysis; default name, change with `--log <file>` |
 
 ### Model transform between space groups (`sg-model.js`)
@@ -493,7 +493,8 @@ Runs the full analysis on HKL file **text** and returns a result object.
   forced:           { id, hm, hs } | null,
   merge: {
     nUnique, nObs,
-    shelxHkl,            // merged SHELX five-column text
+    shelxHkl,            // UNMERGED SHELX five-column text (default output; SHELX does its own merging)
+    shelxHklMerged,      // merged SHELX five-column text (for programs that expect a pre-merged dataset)
     xdsAscii,            // merged XDS_ASCII text
     unmergedXdsAscii,    // UNMERGED XDS_ASCII text (all observations, MERGE=FALSE)
     inputWasMerged,      // true when the input declared MERGE=TRUE

@@ -665,6 +665,54 @@ export function writeShelxHkl(merged) {
     return lines.join('\n') + '\n';
 }
 
+// Write the full reflection set as an UNMERGED SHELX five-column HKL file.
+// No symmetry averaging is applied, so the file is the raw input data in SHELX
+// format. This is the default SHELX output: SHELXL (HKLF 4) performs its own
+// symmetry averaging and scaling, so feeding it a pre-merged file would
+// double-merge the data and bias the scale. The same fixed-column layout and
+// power-of-ten rescaling as writeShelxHkl are used so the file stays valid for
+// SHELXL/SHELXT.
+//
+// Observations that data reduction rejected (XDS marks them with a NEGATIVE
+// sigma) are dropped, exactly as XPREP does. They are outliers (overloaded,
+// bad-profile, etc.) and must not be handed to SHELX: keeping them inflates
+// R(sym) (0.23 -> 0.54 on the MDCoH test set) and degrades the SHELXT solution
+// (CC 91% -> 84%, wrong space group). The unmerged XDS_ASCII output keeps them
+// (with their negative sigma) because downstream programs such as Phenix
+// understand that flag.
+export function writeShelxHklUnmerged(reflections) {
+    let maxV = 0;
+    for (const r of reflections) {
+        if (r.h === 0 && r.k === 0 && r.l === 0) continue;
+        if (r.rejected) continue;
+        const a = Math.abs(r.I), b = Math.abs(r.sig);
+        if (a > maxV) maxV = a;
+        if (b > maxV) maxV = b;
+    }
+    let scale = 1;
+    while (maxV * scale >= 10000) scale /= 10;
+    const fit8 = (x) => {
+        x *= scale;
+        let s = x.toFixed(2);
+        if (s.length > 8) s = x.toFixed(1);
+        if (s.length > 8) s = x.toFixed(0);
+        if (s.length > 8) s = x.toExponential(0);
+        return s.padStart(8);
+    };
+    const lines = [];
+    for (const r of reflections) {
+        // Skip the origin reflection (0,0,0): SHELXL stops reading the HKL
+        // file entirely if it is present (reports 0 reflections / NO REFLECTION
+        // DATA); it derives F(000) from the UNIT instruction instead.
+        if (r.h === 0 && r.k === 0 && r.l === 0) continue;
+        // Drop data-reduction-rejected observations (negative sigma) so the
+        // file matches XPREP and does not pollute SHELX's own merging.
+        if (r.rejected) continue;
+        lines.push(`${String(r.h).padStart(4)}${String(r.k).padStart(4)}${String(r.l).padStart(4)}${fit8(r.I)}${fit8(r.sig)}`);
+    }
+    return lines.join('\n') + '\n';
+}
+
 // XDS_ASCII header date string (e.g. 28-Aug-2026).
 function xdsDateString() {
     const d = new Date();
@@ -752,6 +800,6 @@ export function buildMergingReport(statistics, sgInfo, cell) {
     out.push(`  R(pim)           : ${fmtPct(statistics.rPim)}`);
     out.push(`  Mean I/sigma(I)  : ${fmt(statistics.meanIsig, 1)}`);
     out.push('');
-    out.push('The merged HKL file (SHELX format) is ready for SHELXD / SHELXT / SHELXS.');
+    out.push('The SHELX HKL file (UNMERGED) is ready for SHELXL / SHELXT / SHELXS.');
     return out.join('\n');
 }
