@@ -236,6 +236,20 @@ export function analyzeParsed(parsed, options = {}) {
         }
     }
 
+    // Observations that data reduction rejected (XDS marks them with a negative
+    // sigma) are outliers (overloaded, bad-profile, etc.). They must not enter
+    // the merge, the merging statistics, or the space-group analysis: keeping
+    // them inflates R(merge) (13% -> 148% on the MDCoH set) and degrades the
+    // solution. They are retained only in the unmerged XDS_ASCII output, where
+    // their negative sigma is preserved so downstream programs (e.g. Phenix)
+    // can see and handle the flag. This matches XPREP and Pointless, which both
+    // drop the rejected observations from the analysis.
+    const allReflections = reflections;
+    reflections = reflections.filter(r => !r.rejected);
+    if (!reflections.length) {
+        return { ok: false, error: 'No reflections parsed from the HKL file.' };
+    }
+
     const laueGroups = getLaueGroups();
     const sgData = loadSpaceGroups();
     const metric = crystalSystemFromCell(cell);
@@ -291,9 +305,10 @@ export function analyzeParsed(parsed, options = {}) {
         merge = {
             nUnique: m.nUnique,
             nObs: m.nObs,
-            // All observations, kept unmerged and labelled as such for programs
+            // All observations (including rejected ones, whose negative sigma
+            // is preserved), kept unmerged and labelled as such for programs
             // (e.g. Phenix) that prefer the redundant measurements.
-            unmergedXdsAscii: writeXdsAsciiUnmerged(reflections, {
+            unmergedXdsAscii: writeXdsAsciiUnmerged(allReflections, {
                 outputFile: options.unmergedOutput || 'structure_unmerged.hkl',
                 cell,
                 spaceGroupNumber: usedSG ? usedSG.id : undefined,
