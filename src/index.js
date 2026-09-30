@@ -2,7 +2,8 @@
 // xrdspace — a JavaScript XPREP-style space-group determination tool.
 //
 // Main entry point: loads the space-group dictionary, parses HKL files
-// (XDS_ASCII, SHELX), and runs the full space-group analysis.
+// (XDS_ASCII, SHELX five-column, COD, Bruker P4P, MTZ), and runs the full
+// space-group analysis.
 // Works both as a Node module (for the WebXTL server/UI) and from the CLI
 // (see xrdspace.js).
 
@@ -180,7 +181,8 @@ function shelxSymmOps(ops, centrosymmetric, lattType = 1) {
  *                                          // 64000 A^3, ~40x40x40), false otherwise.
  *   quality: boolean,                      // per-shell table + artifact flags
  *   rad: boolean,                          // RADDOSE-style beam-damage analysis
- *                                          // (needs unmerged XDS_ASCII with PSI)
+ *                                          // (needs unmerged XDS_ASCII with PSI,
+ *                                          //  or Bruker P4P whose omega is PSI)
  *   radMinIsig: number,                    // I/sigma threshold for the fit (2)
  *   radEarlyFrac: number,                  // fraction of rotation = "early" (0.25)
  *   radLateFrac: number,                   // fraction of rotation = "late"  (0.25)
@@ -346,8 +348,9 @@ export function analyzeParsed(parsed, options = {}) {
             merge.artifacts = artifactReport(reflections, usedLaueOps, cell);
         }
         // RADDOSE-style beam-damage analysis: per-observation rotation angle
-        // (PSI) is the dose coordinate. Needs unmerged XDS_ASCII input; on any
-        // other input it reports why it is not usable.
+        // (PSI) is the dose coordinate. Needs unmerged XDS_ASCII input (or P4P,
+        // whose omega is used as PSI); on other input it reports why it is not
+        // usable.
         if (options.rad) {
             merge.beamDamage = analyzeBeamDamage(reflections, cell, parsed.geometry, {
                 minIsig: options.radMinIsig,

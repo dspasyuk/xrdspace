@@ -1,6 +1,6 @@
 {
   "name": "xrdspace",
-  "version": "1.0.0",
+  "version": "1.1.0",
   "type": "module",
   "description": "XPREP-style space-group determination and reflection merging for X-ray diffraction HKL data (JavaScript)",
   "main": "src/index.js",
@@ -16,6 +16,7 @@
     "test:pdb": "node tests/xrdspace-pdbvalid.js",
     "test:mtz": "node tests/xrdspace-mtz.js",
     "test:rad": "node tests/xrdspace-rad.js",
+    "test:p4p": "node tests/xrdspace-p4p.js",
     "build:pdb": "node scripts/build-pdb-table.js"
   },
   "keywords": [
@@ -27,7 +28,11 @@
     "hkl",
     "diffraction",
     "pointless",
-    "xprep"
+    "xprep",
+    "bruker",
+    "p4p",
+    "saint",
+    "apex"
   ],
   "author": "Denis Spasyuk",
   "license": "MIT"

@@ -1,9 +1,10 @@
 // Copyright (c) 2026 Denis Spasyuk. MIT License.
 // Reflection merging and output generation for xrdspace.
 //
-// Produces a symmetry-corrected, merged HKL dataset in the SHELX five-column
-// format (H K L I SIG(I)) that can be fed directly into SHELXD / SHELXT /
-// SHELXS, plus a merged XDS_ASCII file, and a merging report.
+// Produces the output datasets: an UNMERGED SHELX five-column file (H K L I
+// SIG(I)) — the default, since SHELXL (HKLF 4) does its own symmetry merging —
+// a merged SHELX variant, a merged XDS_ASCII file, an unmerged XDS_ASCII file,
+// and a merging report.
 
 import { canonicalRep } from './op-math.js';
 
@@ -749,7 +750,9 @@ export function writeXdsAscii(merged, header = {}) {
 // Every observation is kept, so redundancy and (when present) the anomalous
 // signal survive. For XDS_ASCII input the original data record is copied
 // verbatim, preserving the auxiliary columns (XD, YD, ZD, RLP, PEAK, CORR, PSI);
-// for other formats a 12-column record is synthesized from h, k, l, I, sig.
+// for other formats a 12-column record is synthesized from h, k, l, I, sig,
+// with the per-observation rotation angle (psi, e.g. P4P omega) in the PSI
+// column when present.
 export function writeXdsAsciiUnmerged(reflections, header = {}) {
     const out = [];
     const dateStr = xdsDateString();
@@ -771,7 +774,11 @@ export function writeXdsAsciiUnmerged(reflections, header = {}) {
     out.push('!END_OF_HEADER');
     for (const r of reflections) {
         if (r.raw) { out.push(r.raw); continue; }
-        out.push(`${r.h} ${r.k} ${r.l} ${r.I.toFixed(2)} ${r.sig.toFixed(2)} 0.000 0.000 0.000 0.000 0 0 0.00`);
+        // For non-XDS inputs (e.g. P4P, SHELX) synthesize a 12-column record.
+        // The per-observation rotation angle (psi, when present) goes in the
+        // PSI column so the beam-damage analysis can still use it downstream.
+        const psi = Number.isFinite(r.psi) ? r.psi.toFixed(3) : '0.00';
+        out.push(`${r.h} ${r.k} ${r.l} ${r.I.toFixed(2)} ${r.sig.toFixed(2)} 0.000 0.000 0.000 0.000 0 0 ${psi}`);
     }
     out.push('!END_OF_DATA');
     return out.join('\n') + '\n';

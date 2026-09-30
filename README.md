@@ -31,14 +31,14 @@ SHELXD / SHELXT / SHELXS.
 
 | Step | What xrdspace does |
 |---|---|
-| 1. Parse | Reads **XDS_ASCII**, **SHELX five-column**, **COD `.hkl` (CIF)** and **CCP4 MTZ** files, extracting reflections, unit cell, wavelength, title |
+| 1. Parse | Reads **XDS_ASCII**, **SHELX five-column**, **COD `.hkl` (CIF)**, **Bruker P4P** and **CCP4 MTZ** files, extracting reflections, unit cell, wavelength, title |
 | 2. Crystal system | From the unit-cell metric (length/angle tolerances), with automatic fallback when the data demands lower symmetry than the metric suggests (pseudo-symmetry) |
 | 3. Laue class | R(sym) merge test over all 11 Laue classes (all settings of 2/m tried); the highest-symmetry metric-compatible class whose R(sym) is close to the intrinsic (−1) merge is chosen |
 | 4. Centering | Bravais lattice (P/A/B/C/I/F/R) from reflection parity (systematic absences of the centering conditions), picking the most restrictive centering with no significant violations |
 | 5. Space group | All candidates of the crystal system + centering are scored by their **systematic-absence conditions** (screw axes and glide planes, op by op, including absences that are simply missing from the data). Ranking: fewest violations → most confirmed absences → Laue-class match → Wilson centricity match. For macromolecular cells (volume > 64 000 Å³, ≈ 40×40×40) candidates are restricted to the **65 chiral (Sohncke) space groups** — see below |
 | 6. Centricity | Wilson-style test on \|E²−1\| (centric ≈ 0.968, acentric ≈ 0.736) used as a tie-breaker |
 | 7. Merge | Reflections merged under the chosen Laue class with 1/σ² weights; merged σ combines the weighted-mean error with the sample scatter |
-| 8. Output | Merged **SHELX** HKL, merged **XDS_ASCII** HKL, **unmerged XDS_ASCII**, a **SHELX `.ins`** instruction file, and a consolidated `xrdspace.log` report: merging statistics (incl. resolution/completeness at I/σ = 1 and CC(1/2) = 0.30), a per-resolution-shell quality table, and artifact flags (outliers / ice rings / anisotropy) |
+| 8. Output | **Unmerged SHELX** HKL (the default — SHELXL does its own merging; a merged copy is available in the API as `shelxHklMerged`), merged **XDS_ASCII** HKL, **unmerged XDS_ASCII**, a **SHELX `.ins`** instruction file, and a consolidated `xrdspace.log` report: merging statistics (incl. resolution/completeness at I/σ = 1 and CC(1/2) = 0.30), a per-resolution-shell quality table, and artifact flags (outliers / ice rings / anisotropy) |
 | 9. Cell search | Search the **Crystallography Open Database (COD)** and the **RCSB Protein Data Bank (PDB)** for structures whose unit cell matches a query cell. Matching is done in the **Niggli-reduced cell**, so different settings of the same lattice (axis permutations, unique-axis choices, obtuse/acute angle conventions) are recognised automatically and ranked by match score |
 | 10. PDB validation | `--valid` checks the determined space group against an **offline PDB unit-cell/space-group lookup table** (`data/pdb-cells.json`, built once from RCSB). No network access at validation time: reports **VERIFIED / MISMATCH / AMBIGUOUS (enantiomorph) / INDETERMINATE**, with the space groups PDB assigns to matching cells |
 | 11. Beam damage | `--rad` quantifies radiation damage over the course of the scan (RADDOSE-style): each observation's rotation angle (PSI) is the dose coordinate, and the mean intensity recorded *late* in the scan is compared with that recorded *early*, per resolution shell, giving a decay constant and a damage verdict |
@@ -77,7 +77,7 @@ node src/xrdspace.js hklin data.hkl hklout merged.hkl spacegroup "P 21/c"
 
 | Option | Description |
 |---|---|
-| `--hklin <file>` | Input HKL file (XDS_ASCII, SHELX five-column, or COD `.hkl`) |
+| `--hklin <file>` | Input HKL file (XDS_ASCII, SHELX five-column, COD `.hkl`, or Bruker P4P) |
 | `--hklout <file>` | Output **unmerged** HKL file in **SHELX format** (default: `<input>_shelx.hkl`). SHELX (HKLF 4) does its own merging, so the raw observations are written |
 | `--xdsout <file>` | Output merged HKL file in **XDS_ASCII format** (default: `<input>_xds.hkl`) |
 | `--unmergedout <file>` | Output **unmerged** HKL file in **XDS_ASCII format** (`MERGE=FALSE`), keeping every observation (default: `<input>_unmerged.hkl`) |
@@ -98,7 +98,7 @@ node src/xrdspace.js hklin data.hkl hklout merged.hkl spacegroup "P 21/c"
 | `--limit <n>` | Maximum number of matches to report (default `20`) |
 | `--valid` | **Validate** the determined space group against an offline PDB unit-cell/space-group lookup table (default `data/pdb-cells.json`). No network access: reports VERIFIED / MISMATCH / AMBIGUOUS (enantiomorph) / INDETERMINATE, with the space groups the PDB assigns to cells matching the query cell (uses `--tol` / `--tol-angle`) |
 | `--pdb-table <file>` | Path to the PDB lookup table used by `--valid` (default: `data/pdb-cells.json`). Build it once with `node scripts/build-pdb-table.js` |
-| `--rad` | **RADDOSE-style beam-damage analysis**: use each observation's rotation angle (PSI column) as the dose coordinate and compare the mean intensity recorded *late* in the scan with that recorded *early*, per resolution shell (R = ⟨I⟩_late/⟨I⟩_early; R < 1 = decayed). Needs **unmerged XDS_ASCII** input with a PSI column; on other input it reports why it is not usable. The per-shell table is written to the consolidated report (`xrdspace.log`) |
+| `--rad` | **RADDOSE-style beam-damage analysis**: use each observation's rotation angle (PSI column) as the dose coordinate and compare the mean intensity recorded *late* in the scan with that recorded *early*, per resolution shell (R = ⟨I⟩_late/⟨I⟩_early; R < 1 = decayed). Needs input with a per-observation rotation angle (**unmerged XDS_ASCII** with a PSI column, or **Bruker P4P**, whose ω is the rotation angle); on other input it reports why it is not usable. The per-shell table is written to the consolidated report (`xrdspace.log`) |
 | `--rad-minisig <n>` | I/σ threshold for observations entering the damage analysis (default `2`) |
 | `--rad-early <frac>` | Fraction of the rotation counted as "early" (default `0.25`) |
 | `--rad-late <frac>` | Fraction of the rotation counted as "late" (default `0.25`) |
@@ -409,7 +409,7 @@ candidates to the Sohncke groups when the **unit-cell volume exceeds
 |---|---|---|
 | `<input>_shelx.hkl` | **Unmerged** SHELX five-column `H K L I SIG(I)` (all observations, no symmetry averaging) | Feed directly to **SHELXL / SHELXT / SHELXS** — SHELX (HKLF 4) does its own merging, so the raw data is written |
 | `<input>_xds.hkl` | Merged XDS_ASCII (`MERGE=TRUE`, `FRIEDEL'S_LAW=TRUE`) with cell, space group, wavelength and resolution-range header | Re-integration / further processing |
-| `<input>_unmerged.hkl` | **Unmerged** XDS_ASCII (`MERGE=FALSE`, labelled `UNMERGED (all observations)`) with cell, space group, wavelength and resolution-range header. XDS_ASCII input records are copied verbatim (auxiliary `XD`, `YD`, `ZD`, `RLP`, `PEAK`, `CORR`, `PSI` columns preserved); other formats are written as 12-column records | Programs that prefer redundancy — e.g. **Phenix** (`phenix.refine` / `phenix.xtriage`) and anomalous-data work. **MOLREP** usually takes the merged file |
+| `<input>_unmerged.hkl` | **Unmerged** XDS_ASCII (`MERGE=FALSE`, labelled `UNMERGED (all observations)`) with cell, space group, wavelength and resolution-range header. XDS_ASCII input records are copied verbatim (auxiliary `XD`, `YD`, `ZD`, `RLP`, `PEAK`, `CORR`, `PSI` columns preserved); other formats are written as 12-column records (the P4P rotation angle ω is placed in the `PSI` column) | Programs that prefer redundancy — e.g. **Phenix** (`phenix.refine` / `phenix.xtriage`) and anomalous-data work. **MOLREP** usually takes the merged file |
 | `<input>_shelx.ins` | SHELX instruction file: `TITL`, `CELL`, `LATT` (sign encodes centrosymmetry), `SYMM` (generating operations, one per inversion pair for centric groups), `SFAC`, `UNIT`, `HKLF 4`, `TREF 50` | Structure solution with SHELXT |
 | `xrdspace.log` | Consolidated aligned text report: input/cell, space-group determination, Laue table, candidates, merging statistics, optional PDB validation, and the output-file list (no duplicated blocks) | Archive the analysis; default name, change with `--log <file>` |
 
@@ -580,6 +580,7 @@ const result = analyzeMtz(fs.readFileSync('data.mtz'));
 | **XDS_ASCII** | `!` header lines | Cell from `!UNIT_CELL_CONSTANTS=`, plus `SPACE_GROUP_NUMBER/NAME`, `X-RAY_WAVELENGTH`, `MERGE`, `FRIEDELS_LAW` |
 | **SHELX five-column** | 5+ numeric columns `H K L I SIG(I)` | No cell in the file — provide `--cell` |
 | **COD `.hkl`** | CIF `loop_` with `_refln_` keys | Reads `F²_meas` (+σ), `I_meas` (+σ), `F_meas` (+σ) or `f_obs` (+σ); cell must be supplied |
+| **Bruker P4P** | `FILEID` header line | Cell from the `CELL` line, wavelength from `SOURCE`, title from `TITLE`. Reflections from `REF05` records (`h k l ω 2θ ψ χ … I σ u1 u2 u3`); the intensity `I` and its σ are the two fields immediately before the reciprocal-lattice `u1 u2 u3` components, and the rotation angle ω becomes the per-observation PSI. Direct-beam `(0 0 0)` rows are ignored. Handles the SAINT/APEX quirk of fusing a negative ω onto `l` (e.g. `13-108.000`) |
 | **CCP4 MTZ** | `MTZ ` binary magic (library only) | Cell, space group and wavelength from the MTZ header; intensity/sigma columns auto-detected (`IMEAN`/`F`/…, `SIGIMEAN`/`SIGF`/…). Use `analyzeMtz()` — the CLI reads text HKL files |
 
 ---
@@ -811,6 +812,7 @@ exits non-zero on failure.
 npm test            # full 10 000-entry COD validation (the main benchmark)
 npm run test:mtz    # MTZ reader/writer round-trip + analyzeMtz end-to-end
 npm run test:rad    # RADDOSE-style beam-damage (--rad) tests
+npm run test:p4p    # Bruker P4P reader (REF05 columns, l/omega fusion, (0,0,0) rows)
 npm run test:ins    # SHELX .ins (LATT / SYMM) regression tests
 npm run test:cell   # offline Niggli reduction / cell-similarity tests
 npm run test:pdb    # offline PDB lookup (--valid) tests
@@ -880,6 +882,7 @@ xrdspace/
 │   ├── xrdspace-cellsearch.js  # offline tests of Niggli reduction / similarity
 │   ├── xrdspace-pdbvalid.js    # offline tests of the PDB lookup (--valid)
 │   ├── xrdspace-ins.js         # SHELX .ins (LATT/SYMM) regression tests
+│   ├── xrdspace-p4p.js         # Bruker P4P reader regression tests
 │   ├── xrdspace-mtz.js         # MTZ round-trip tests + analyzeMtz end-to-end
 │   ├── xrdspace-rad.js         # beam-damage tests (--rad): synthetic known-decay
 │   │                           #   scan + real taurine scan + graceful no-PSI path

@@ -31,7 +31,7 @@ Usage:
   node src/xrdspace.js --codsearch|--pdbsearch|--search --cell "a b c alpha beta gamma" [options]
 
 Input / output:
-  --hklin <file>      Input HKL file (XDS_ASCII or SHELX five-column format)
+  --hklin <file>      Input HKL file (XDS_ASCII, SHELX five-column, or Bruker P4P)
   --hklout <file>     Output UNMERGED HKL file, SHELX format (default: <input>_shelx.hkl).
                       SHELX (HKLF 4) does its own merging, so the raw observations
                       are written; a merged SHELX file is also available in the API
@@ -97,12 +97,13 @@ Beam-damage analysis (RADDOSE-style):
                                     intensity recorded LATE in the scan is compared
                                     with that recorded EARLY, per resolution shell
                                     (R = <I>_late / <I>_early; R < 1 = decayed).
-                                    Needs UNMERGED XDS_ASCII input with a PSI
-                                     column; on other input it reports why it is
-                                     not usable. The per-shell table is written to
-                                     the consolidated report (xrdspace.log). See
-                                     Pantelides et al., Acta Cryst. D65, 1010-1022
-                                     (2009).
+                                     Needs input carrying a per-observation
+                                      rotation angle: unmerged XDS_ASCII (PSI
+                                      column) or Bruker P4P (omega); on other input
+                                      it reports why it is not usable. The per-shell
+                                      table is written to the consolidated report
+                                      (xrdspace.log). See Pantelides et al., Acta
+                                      Cryst. D65, 1010-1022 (2009).
    --rad-minisig <n>                 I/sigma threshold for observations entering the
                                     analysis (default 2)
   --rad-early <frac>                Fraction of the rotation counted as "early"
@@ -194,7 +195,7 @@ function fmtBeamDamage(bd) {
     if (!bd || !bd.usable) {
         L.push(reportKv('Beam damage', 'not analysed'));
         L.push(`    ${(!bd || bd.reason) || 'no data'}`);
-        L.push('    (needs UNMERGED XDS_ASCII input with a per-observation rotation angle)');
+        L.push('    (needs input with a per-observation rotation angle: XDS_ASCII PSI or P4P omega)');
         return L;
     }
     L.push(reportKv('Scan rotation', `${bd.totalRotation} deg` + (Number.isFinite(bd.startAngle) ? ` (start ${bd.startAngle} deg)` : '')));
