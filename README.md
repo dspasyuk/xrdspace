@@ -42,6 +42,7 @@ SHELXD / SHELXT / SHELXS.
 | 9. Cell search | Search the **Crystallography Open Database (COD)** and the **RCSB Protein Data Bank (PDB)** for structures whose unit cell matches a query cell. Matching is done in the **Niggli-reduced cell**, so different settings of the same lattice (axis permutations, unique-axis choices, obtuse/acute angle conventions) are recognised automatically and ranked by match score |
 | 10. PDB validation | `--valid` checks the determined space group against an **offline PDB unit-cell/space-group lookup table** (`data/pdb-cells.json`, built once from RCSB). No network access at validation time: reports **VERIFIED / MISMATCH / AMBIGUOUS (enantiomorph) / INDETERMINATE**, with the space groups PDB assigns to matching cells |
 | 11. Beam damage | `--rad` quantifies radiation damage over the course of the scan (RADDOSE-style): each observation's rotation angle (PSI) is the dose coordinate, and the mean intensity recorded *late* in the scan is compared with that recorded *early*, per resolution shell, giving a decay constant and a damage verdict |
+| 12. Absorption correction | `--abs` (AIMLESS method, Evans & McCoy, *Acta Cryst.* D66, 210 (2010)): corrects intensity variations from X-ray absorption across **multiple scans** of the same crystal by fitting a spherical-harmonic absorption surface + per-scan scale offsets from the redundancy of equivalent reflections, plus a per-scan SD σ correction |
 
 ---
 
@@ -77,10 +78,11 @@ node src/xrdspace.js hklin data.hkl hklout merged.hkl spacegroup "P 21/c"
 
 | Option | Description |
 |---|---|
-| `--hklin <file>` | Input HKL file (XDS_ASCII, SHELX five-column, COD `.hkl`, or Bruker P4P) |
+| `--hklin <file> [<file> ...]` | Input HKL file(s) (XDS_ASCII, SHELX five-column, COD `.hkl`, or Bruker P4P). Give all scans of the same crystal as one list, e.g. `--hklin scan1.hkl scan2.hkl scan3.hkl` (or repeat `--hklin`). The first is used for space-group determination, all are combined for the analysis, and with `--abs` each file is a scan |
 | `--hklout <file>` | Output **unmerged** HKL file in **SHELX format** (default: `<input>_shelx.hkl`). SHELX (HKLF 4) does its own merging, so the raw observations are written |
 | `--xdsout <file>` | Output merged HKL file in **XDS_ASCII format** (default: `<input>_xds.hkl`) |
 | `--unmergedout <file>` | Output **unmerged** HKL file in **XDS_ASCII format** (`MERGE=FALSE`), keeping every observation (default: `<input>_unmerged.hkl`) |
+| `--mtzout <file>` | Output **merged MTZ** (CCP4) for **REFMAC**, columns `H K L IMEAN SIGIMEAN F SIGF` (default: `<input>_merged.mtz`) |
 | `--log <file>` | Path for the consolidated, formatted report. The report is **always** written; default `xrdspace.log` next to the input file |
 | `--spacegroup <sg>` | **Force** a specific space group — number (`14`) or Hermann–Mauguin symbol (`"P 21/c"`, `"P-1"`, `"P 21 21 21"`). Used for merging/output and checked for consistency with the data |
 | `--laue <group>` | **Force** a Laue class for merging (e.g. `-1`, `2/m`, `mmm`, `4/mmm`, `-3m`, `6/mmm`, `m-3m`) |
@@ -103,6 +105,13 @@ node src/xrdspace.js hklin data.hkl hklout merged.hkl spacegroup "P 21/c"
 | `--rad-early <frac>` | Fraction of the rotation counted as "early" (default `0.25`) |
 | `--rad-late <frac>` | Fraction of the rotation counted as "late" (default `0.25`) |
 | `--rad-shells <n>` | Number of resolution shells for the damage table (default `10`) |
+| `--abs` | **Absorption correction** (AIMLESS method, Evans & McCoy, *Acta Cryst.* D66, 210 (2010)). Operates on the `--hklin` data; with a single `--hklin` file it runs in single-scan mode (symmetry-equivalent reflections), and **multiple `--hklin` files give true multi-scan correction** (each file is a scan). The **corrected** intensities feed the merge and every output file. See the dedicated section below |
+| `--abs-cycles <n>` | Absorption-fit ALS iterations (default `30`) |
+| `--abs-order <n>` | Spherical-harmonic order: even *l* up to `n`, odd *l* up to `n-1` (default `6`, the AIMLESS 6/5 set = 49 terms) |
+| `--abs-outlier <sigma>` | Reject observations beyond this many σ (default `6`) |
+| `--abs-robust <lncosh\|huber\|none>` | Robust loss for the fit (default `lncosh`) |
+| `--abs-no-sd` | Skip the per-scan SD σ correction |
+| `--abs-min-scans <n>` | Minimum distinct scans per equivalent set (default `2` when ≥ 2 scans, else `1`) |
 | `--help`, `-h` | Show help |
 | `--version`, `-v` | Show version |
 
@@ -385,6 +394,140 @@ with that assumption stated. For a robust small-molecule crystal the decay is
 small (as above); the per-shell values and the fit R² let you judge how much of
 the trend is real damage versus noise.
 
+### Multi-scan absorption correction (`--abs`, AIMLESS method)
+
+X-rays are absorbed as they pass through the crystal, and the path length
+depends on the crystal orientation — so the *same* reflection is recorded
+stronger in one scan than in another. With `--abs`, xrdspace corrects this
+empirically from the **redundancy of equivalent reflections measured at
+different orientations**, following the method of **AIMLESS** by
+**P. R. Evans and A. W. McCoy** (CCP4, Daresbury Laboratory; *Acta Cryst.*
+**D66**, 210–232, 2010):
+
+- Each input file is one **scan** (image set) of the same crystal. The
+  reflections are grouped into Laue-equivalent sets, and the model
+  `log I_obs = G_set + Σ aₖ Yₖ(dir) + d_scan` is fitted by **alternating least
+  squares** (ALS): the group log-intensity `G_set`, a **spherical-harmonic
+  absorption surface** `Σ aₖ Yₖ(dir)` over the direction of the scattering
+  vector in the **lab frame**, and a **per-scan scale offset** `d_scan`. The
+  spherical-harmonic basis is the AIMLESS one (even *l* up to 6, odd *l* up to
+  5 → 49 terms). Working in **log space** makes the model linear and robust to
+  the multiplicative nature of absorption.
+- The fit is **robust**: an iteratively-reweighted least squares with a
+  **ln-cosh** loss (or Huber; `absRobustLoss`) downweights discordant
+  observations, and gross outliers beyond `absOutlierSigma` σ (default 6) are
+  **rejected** from both the fit and the set means. `d_scan` and the surface are
+  re-fitted until the coefficients converge.
+- The absorption direction is the scattering vector rotated into the **lab
+  frame** by each scan's orientation. For **Bruker P4P** input the orientation
+  is taken directly from the **`ORT1/ORT2/ORT3` matrix** (verified:
+  `|ORT·(h,k,l)| = 1/d`), so the true beam path is used; for other formats the
+  crystal-frame direction from the unit cell is used.
+- A per-scan **secondary-data (SD) σ correction** is then applied:
+  `σ′ = SDfac·√(σ² + SDb·I + (SDadd·I)²)`, with the three parameters refined
+  per scan by damped Gauss-Newton so the corrected scatter matches the observed
+  redundancy.
+
+The corrected intensities and σ are returned in the result
+(`merge.absorption.correctedReflections`); the report block is written to
+`xrdspace.log`.
+
+**How to run it on an HKL file.** Give **all scans** as one `--hklin` list;
+`--abs` then corrects across them. A single file runs single-scan mode. The
+order — space group → absorption → merge — is handled internally.
+
+```sh
+# Single-scan correction (symmetric-equivalent reflections) on one file:
+node src/xrdspace.js --hklin scan1_XDS.HKL --abs --spacegroup 14
+
+# Multi-scan: list every scan of the same crystal:
+node src/xrdspace.js --hklin scan1_XDS.HKL scan2_XDS.HKL --abs
+
+# Three scans + tuning (order 4, 20 cycles, reject > 4 sigma):
+node src/xrdspace.js --hklin scan1.hkl scan2.hkl scan3.hkl --abs \
+    --abs-order 4 --abs-cycles 20 --abs-outlier 4 \
+    --spacegroup "P 21/c"
+```
+
+Notes:
+
+- With **one file** it runs **single-scan** mode (symmetry-equivalent
+  reflections, `minScans = 1`); with two or more `--hklin` files it runs
+  **multi-scan** (each file is a scan; needs enough equivalent sets). When too
+  few sets exist the report says *why* it is not usable instead of guessing.
+- A single rotation scan has **one** orientation, so multi-scan absorption
+  correction genuinely needs **separate scans** — a concatenated file has no scan
+  boundaries, which is why each scan is its own `--hklin` file.
+- The **unit cell** is taken from the first `--hklin` file (or `--cell`); it is
+  used to compute the scattering-vector directions. The **space group** used for
+  the equivalent-set grouping is the one the auto-determination picks (or the
+  forced
+  `--spacegroup`), and the correction runs *after* it.
+- For **Bruker P4P** input the true lab-frame beam path is used (ORT matrix);
+  otherwise the reflection direction from the unit cell is used. Passing a
+  per-scan `orientation` through the library API uses the exact beam path.
+- The **SD σ correction is on by default**; disable with `--abs-no-sd`.
+
+Example output (two taurine scans, `test/XDS_ASCII_unmerged.hkl` +
+`test/taurine/taurine_unmerged.hkl`):
+
+```
+------------------------------------------------------------------------------
+  ABSORPTION CORRECTION (AIMLESS METHOD)
+------------------------------------------------------------------------------
+  Converged          : yes
+  Iterations         : 2
+  Number of scans    : 2
+  Equivalent sets    : 1562
+  SH basis terms     : 49  (lmaxEven=6, lmaxOdd=5)
+  Overall scale      : 2.910132
+  ...
+```
+
+### Running the absorption test on your own HKL files
+
+The unit test (`tests/xrdspace-abs.js`) validates the spherical-harmonic basis
+(orthonormality on an equal-area grid, term counts) and the full correction on
+**synthetic** multi-scan data with a known absorption gradient — it needs no
+external files:
+
+```sh
+npm run test:abs
+```
+
+To exercise the correction on **your own HKL files**, run the CLI with `--abs`
+(as above), listing every scan after `--hklin`:
+
+```sh
+# Single scan (symmetry-equivalent correction):
+node src/xrdspace.js --hklin <scan1.hkl> --abs --no-write
+
+# Two scans of the same crystal:
+node src/xrdspace.js --hklin <scan1.hkl> <scan2.hkl> --abs --no-write
+
+# Reuse the repo's bundled taurine scans as a quick sanity check:
+node src/xrdspace.js --hklin test/taurine/taurine_unmerged.hkl \
+    test/XDS_ASCII_unmerged.hkl --abs --no-write
+```
+
+`--no-write` prints the consolidated report (including the absorption block) to
+stdout without creating output files; omit it to also write the corrected
+`_shelx.hkl` / `_xds.hkl` / `_unmerged.hkl` files and `xrdspace.log`.
+
+If you have **P4P** (Bruker) scans, feed them to `--abs` directly: the
+**`ORT1/ORT2/ORT3` orientation matrix** is read from the header and used for the
+true lab-frame beam path. **SHELX five-column** scans carry no orientation, so
+convert them to unmerged XDS_ASCII first (run `xrdspace --hklin <file>` once per
+scan) and the direction-based approximation from the unit cell is used.
+
+**Cross-checking against SADABS.** SADABS is the classic reference for
+multi-scan absorption correction, but it is closed-source and its interactive
+prompt flow makes unattended cross-validation awkward. The equivalent AIMLESS
+method implemented here is the open, documented formulation; to compare by hand,
+run SADABS on the same multi-scan `.p4p` set (its native input) and compare the
+fitted per-image scale factors and the corrected intensities with
+`merge.absorption` from this tool.
+
 ### Chiral (Sohncke) space groups for macromolecular data
 
 Protein and other macromolecular crystals are almost always in one of the
@@ -411,7 +554,96 @@ candidates to the Sohncke groups when the **unit-cell volume exceeds
 | `<input>_xds.hkl` | Merged XDS_ASCII (`MERGE=TRUE`, `FRIEDEL'S_LAW=TRUE`) with cell, space group, wavelength and resolution-range header | Re-integration / further processing |
 | `<input>_unmerged.hkl` | **Unmerged** XDS_ASCII (`MERGE=FALSE`, labelled `UNMERGED (all observations)`) with cell, space group, wavelength and resolution-range header. XDS_ASCII input records are copied verbatim (auxiliary `XD`, `YD`, `ZD`, `RLP`, `PEAK`, `CORR`, `PSI` columns preserved); other formats are written as 12-column records (the P4P rotation angle ω is placed in the `PSI` column) | Programs that prefer redundancy — e.g. **Phenix** (`phenix.refine` / `phenix.xtriage`) and anomalous-data work. **MOLREP** usually takes the merged file |
 | `<input>_shelx.ins` | SHELX instruction file: `TITL`, `CELL`, `LATT` (sign encodes centrosymmetry), `SYMM` (generating operations, one per inversion pair for centric groups), `SFAC`, `UNIT`, `HKLF 4`, `TREF 50` | Structure solution with SHELXT |
+| `<input>_merged.mtz` | **Merged** MTZ (CCP4) with columns `H K L IMEAN SIGIMEAN F SIGF`, the cell, space group and full symmetry operators | **REFMAC** / CCP4 refinement (macromolecular). Write it with `--mtzout <file>` |
 | `xrdspace.log` | Consolidated aligned text report: input/cell, space-group determination, Laue table, candidates, merging statistics, optional PDB validation, and the output-file list (no duplicated blocks) | Archive the analysis; default name, change with `--log <file>` |
+
+### Feeding the output to SHELX (small molecule)
+
+`xrdspace` writes an **unmerged** SHELX HKLF 4 file plus a matching `.ins` (cell,
+lattice, symmetry, `SFAC`/`UNIT`, `HKLF 4`) — exactly what SHELX expects (SHELX
+does its own merging). Use the **corrected** data by running with `--abs`, and
+give your expected composition with `--sfac` so the `.ins` `SFAC`/`UNIT` lines
+are right:
+
+```sh
+# 1) space group + absorption correction + SHELX files
+node src/xrdspace.js \
+    --hklin scan1.hkl scan2.hkl scan3.hkl \
+    --abs \
+    --spacegroup "P 21/c" \
+    --sfac "C2 H7 N O3 S" \
+    --hklout corrected.hkl \
+    --log corrected.log
+# -> corrected.hkl (unmerged H K L I SIG(I), HKLF 4)
+# -> corrected.ins (TITL CELL LATT SYMM SFAC UNIT HKLF 4 TREF 50)
+
+# 2) structure solution (reads corrected.ins + corrected.hkl)
+shelxt corrected          # or:  shelxs corrected
+
+# 3) refinement (SHELXT/SHELXS writes the atoms back into corrected.ins/.res)
+shelxl corrected          # add the usual L.S. / BOND / etc. to corrected.ins first
+```
+
+Notes:
+- SHELX needs `corrected.ins` and `corrected.hkl` to share the base name in the
+  same directory — that is what `--hklout corrected.hkl` produces.
+- The HKL file is **unmerged** on purpose: `HKLF 4` makes SHELXL average
+  symmetry-equivalents and apply its own scale/weighting, so feeding a
+  pre-merged file would double-merge.
+- `--spacegroup` is optional; forcing it (as above) guarantees the Laue class
+  used for the absorption grouping matches the group you will refine in.
+
+### Feeding the output to REFMAC (macromolecular / CCP4)
+
+REFMAC wants a **merged MTZ** with amplitudes (`F`/`SIGF`) and a model PDB.
+`xrdspace` writes a merged MTZ with `H K L IMEAN SIGIMEAN F SIGF`
+(`--mtzout`, default `<input>_merged.mtz`):
+
+```sh
+# 1) space group + absorption correction + merged MTZ
+node src/xrdspace.js \
+    --hklin sweep1.hkl sweep2.hkl \
+    --abs \
+    --spacegroup "P 21 21 21" \
+    --mtzout corrected.mtz \
+    --log corrected.log
+
+# 2) (recommended) proper I -> F conversion with ctruncate (French-Wilson,
+#    handles negative intensities), then add a Free-R flag:
+ctruncate -hklin corrected.mtz -hklout corrected_trunc.mtz \
+          -colin 'IMEAN SIGIMEAN' -colout 'F SIGF'
+freerflag hklin corrected_trunc.mtz hklout corrected_free.mtz <<EOF
+END
+EOF
+
+# 3) refine
+refmac5 hklin corrected_free.mtz xyzin model.pdb \
+        hklout refined.mtz xyzout refined.pdb <<EOF
+LABIN FP=F SIGFP=SIGF FREE=FREE
+NCYC 10
+EOF
+```
+
+Quick alternative (skip `ctruncate`) — refine directly against the amplitudes
+`xrdspace` wrote (`F = sqrt(I)`, `SIGF = SIGI/2F`):
+
+```sh
+refmac5 hklin corrected.mtz xyzin model.pdb \
+        hklout refined.mtz xyzout refined.pdb <<EOF
+LABIN FP=F SIGFP=SIGF
+NCYC 10
+EOF
+```
+
+Notes:
+- The MTZ columns are `IMEAN SIGIMEAN` **and** `F SIGF`, so you can choose which
+  pair to refine against (`LABIN FP=F SIGFP=SIGF`, or use `ctruncate` first).
+- **Free-R**: `xrdspace` does not add a `FREE` flag; add one with CCP4
+  `freerflag` (or `unique`/`cad`) as above, otherwise REFMAC runs without R-free.
+- The MTZ carries the full symmetry operators, so a centered group
+  (`C 2 2 21`, `I 4 2 2`, …) is written correctly.
+- REFMAC (not `xrdspace`) does the model refinement; `xrdspace` supplies the
+  scaled, absorption-corrected merged data and the space group.
 
 ### Model transform between space groups (`sg-model.js`)
 
@@ -467,6 +699,16 @@ Runs the full analysis on HKL file **text** and returns a result object.
 | `radEarlyFrac` | `number` | Fraction of the rotation counted as "early" (default `0.25`) |
 | `radLateFrac` | `number` | Fraction of the rotation counted as "late" (default `0.25`) |
 | `radShells` | `number` | Number of resolution shells for the damage table (default `10`) |
+| `abs` | `boolean` | Also run the multi-scan absorption correction (`--abs`); requires `absScans` |
+| `absScans` | `Map\|array\|object` | Per-scan reflection sets: `Map<scanIndex, reflections[]>`, `reflections[][]` (index = scan), or `{[idx]: reflections[]}`. The first entry is scan 0 |
+| `absLmaxEven` / `absLmaxOdd` | `number` | Spherical-harmonic orders (defaults `6` / `5`, the AIMLESS set → 49 terms) |
+| `absMaxIter` / `absConvThreshold` | `number` | Fit iteration cap (default `10`) and convergence threshold (default `1e-5`) |
+| `absMinGroups` | `number` | Minimum multi-scan equivalent sets required (default `10`) |
+| `absMinScans` | `number` | Minimum distinct scans per equivalent set (default `2`; use `1` for single-scan mode) |
+| `absUseSD` | `boolean` | Apply the per-scan SD σ correction (default `true`) |
+| `absRobust` | `boolean` | Robust (IRLS) fit with outlier downweighting/rejection (default `true`) |
+| `absRobustLoss` | `string` | Robust loss: `'lncosh'` (default) or `'huber'` |
+| `absOutlierSigma` | `number` | Reject observations beyond this many σ in log space (default `6`) |
 
 **Return value**
 
@@ -499,6 +741,7 @@ Runs the full analysis on HKL file **text** and returns a result object.
     unmergedXdsAscii,    // UNMERGED XDS_ASCII text (all observations, MERGE=FALSE)
     inputWasMerged,      // true when the input declared MERGE=TRUE
     shelxIns,            // SHELX .ins text
+    mtz,                 // merged MTZ Buffer (H K L IMEAN SIGIMEAN F SIGF, REFMAC/CCP4)
     statistics: { dmin, dmax, dIsig1, nUniqueIsig1, completenessIsig1,
                   dCC30, nUniqueCC30, completenessCC30,
                   nObs, nUnique, meanMultiplicity, completeness,
@@ -509,7 +752,11 @@ Runs the full analysis on HKL file **text** and returns a result object.
                           //   multiplicity, rMerge, rMeas, rPim, meanIsig, ccHalf, negFrac }]
     artifacts,           // (quality) { outliers, iceRings, anisotropy, anisoRatio, anisotropic }
     beamDamage,          // (rad) { usable, reason?, overall:{ratio,k,r2,doseHalf},
-                          //   shells:[...], decay } — RADDOSE-style damage analysis
+                           //   shells:[...], decay } — RADDOSE-style damage analysis
+    absorption,          // (abs) { ok, error?, converged?, iterations?, nScans?,
+                           //   nEquivalentSets?, overallScale?, absorptionCoeffs?,
+                           //   runOffsets?, sdParams?, stats?, report,
+                           //   correctedReflections? } — AIMLESS multi-scan correction
   }
 }
 ```
@@ -564,6 +811,10 @@ const result = analyzeMtz(fs.readFileSync('data.mtz'));
 | `searchPdbLookup(table, cell, opts)` | Entries of the lookup table whose Niggli-reduced cell matches `cell` within `tolLen`/`tolAng` |
 | `validateSpaceGroupAgainstPdb(table, cell, sgId, opts)` | Validate SG number `sgId` against the table: `{verdict, matches, total, sgNumbers, sgCounts, ...}` with `verdict` = `verified \| mismatch \| enantiomorph \| none` |
 | `analyzeBeamDamage(reflections, cell, geometry, opts)` | RADDOSE-style beam-damage analysis (`--rad`): per-resolution-shell `I_late/I_early`, decay constant k, dose to half. `{usable, reason?, overall:{ratio,k,r2,doseHalf}, shells:[...], decay}` |
+| `runAbsorptionCorrection(scans, cell, laueOps, opts)` | Multi-scan absorption correction (`--abs`, AIMLESS method): `scans` is a `Map<scanIndex, reflections[]>`, an array of `reflections[]` (index = scan), or `{[idx]: reflections[]}`; `laueOps` are the Laue-group ops (from `getLaueGroups()`). Returns `{ok, error?, converged?, iterations?, nScans?, nEquivalentSets?, overallScale?, absorptionCoeffs?, runOffsets?, sdParams?, stats?, correctedReflections?}` |
+| `MultiScanAbsorptionCorr` | The correction engine as a class: `addScan(idx, reflections, orientation?)`, `setCell(cell)`, `run(laueOps)`, `getCorrectedReflections()`. `orientation` is an optional 3×3 crystal→lab rotation matrix per scan |
+| `buildAbsorptionReport(result, cell)` | Human-readable text report for an `runAbsorptionCorrection`/`run()` result |
+| `SphericalHarmonic` | Real spherical-harmonic basis (AIMLESS term set): `new SphericalHarmonic(lmaxEven, lmaxOdd)`, `nTerms()`, `ylm(x, y, z)` |
 | `kPer100(k)` | Express a per-degree decay constant in "per 100 degrees" units |
 | `transformModelToSpaceGroup(text, sg)` | Rewrite a SHELX `.res/.ins` model into space group `sg` (number/symbol/object): `{ok, hm, added, removed, report, res}` — adds symmetry partners when lowering symmetry, removes redundant molecules when raising it |
 | `parseShelxModel(text)` | Parse a SHELX model: `{title, cell, latt, symm, sfac, atoms, ...}` |
@@ -812,6 +1063,7 @@ exits non-zero on failure.
 npm test            # full 10 000-entry COD validation (the main benchmark)
 npm run test:mtz    # MTZ reader/writer round-trip + analyzeMtz end-to-end
 npm run test:rad    # RADDOSE-style beam-damage (--rad) tests
+npm run test:abs    # multi-scan absorption correction (--abs) tests
 npm run test:p4p    # Bruker P4P reader (REF05 columns, l/omega fusion, (0,0,0) rows)
 npm run test:ins    # SHELX .ins (LATT / SYMM) regression tests
 npm run test:cell   # offline Niggli reduction / cell-similarity tests
@@ -841,6 +1093,14 @@ a local MX data dir, respectively).
   ⟨I⟩_late/⟨I⟩_early ratio close to ground truth; (2) runs the parser +
   analysis on a real taurine XDS_ASCII scan; (3) confirms input with no PSI
   column reports *not analysed* instead of throwing.
+- **Absorption correction** (`tests/xrdspace-abs.js`) — (1) checks the
+  spherical-harmonic basis: term counts (49 for the AIMLESS default lmaxEven=6/
+  lmaxOdd=5), the Y₀₀ constant, orthonormality on an equal-area grid, and the
+  parity of the *l*=1 terms; (2) runs the full multi-scan correction on
+  synthetic 3-scan data with a *known* z-gradient absorption and per-scan
+  crystal orientations, checking it recovers the *l*=1 anisotropy and an
+  overall scale of ~1; (3) exercises the error paths (single scan, too few
+  equivalent sets) and the class API.
 
 ---
 
@@ -863,6 +1123,9 @@ xrdspace/
 │   │                      #   Niggli-reduced cell, validate space group (--valid)
 │   ├── raddose.js         # RADDOSE-style beam-damage analysis (--rad):
 │   │                      #   I_late/I_early per resolution shell, decay constant
+│   ├── abs.js             # multi-scan absorption correction (--abs, AIMLESS method):
+│   │                      #   spherical-harmonic absorption surface + per-scan scale
+│   │                      #   offsets + per-scan SD sigma correction
 │   ├── mtz.js             # CCP4 MTZ reader/writer (parseMtz / writeMtz, ...)
 │   ├── sg-model.js        # transform a SHELX model between space groups
 │   └── space-groups.js    # dictionary of all 230 space groups (all settings)
@@ -886,6 +1149,9 @@ xrdspace/
 │   ├── xrdspace-mtz.js         # MTZ round-trip tests + analyzeMtz end-to-end
 │   ├── xrdspace-rad.js         # beam-damage tests (--rad): synthetic known-decay
 │   │                           #   scan + real taurine scan + graceful no-PSI path
+│   ├── xrdspace-abs.js         # multi-scan absorption tests (--abs): SH-basis
+│   │                           #   orthonormality + synthetic 3-scan known-gradient
+│   │                           #   correction + error paths + class API
 │   ├── xrdspace-report-10k.svg  # PASS/NEAR/FAIL chart (10 000-entry set)
 │   └── xrdspace-report-10k.png  # PNG render of the 10 000-entry chart
 ├── data/                  # generated PDB lookup table (git-ignored, ~40 MB)

@@ -19,6 +19,7 @@ import { analyzeSpaceGroup, crystalSystemFromCell, scoreSpaceGroup, isCentrosymm
 import { mergeReflections, computeMergeStatistics, resolutionShellStats, artifactReport, writeShelxHkl, writeShelxHklUnmerged, writeXdsAscii, writeXdsAsciiUnmerged, buildMergingReport, dSpacing } from './merge.js';
 import { parseOperation, LATT_CENTERING, shelxSymmGenerators } from './op-math.js';
 import { analyzeBeamDamage } from './raddose.js';
+import { runAbsorptionCorrection, buildAbsorptionReport, MultiScanAbsorptionCorr } from './abs.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
@@ -121,6 +122,42 @@ export function writeShelxIns(usedSG, cell, options = {}) {
     out.push('TREF 50');
     out.push('END');
     return out.join('\n') + '\n';
+}
+
+// Build a merged MTZ buffer (REFMAC / CCP4-ready) from merged reflections.
+// Columns: H K L IMEAN SIGIMEAN F SIGF (F = sqrt(I), sigF = sigI/(2F)). The
+// cell, space group and full symmetry operators come from the resolved group.
+function buildMergedMtz(merged, cell, sg, parsed, stats) {
+    const ncols = 7;
+    const n = merged.length;
+    const data = new Float64Array(n * ncols);
+    for (let i = 0; i < n; i++) {
+        const r = merged[i];
+        const I = r.I;
+        const F = I > 0 ? Math.sqrt(I) : 0;
+        const sigF = (I > 0 && r.sig > 0) ? r.sig / (2 * Math.sqrt(I)) : (r.sig || 0);
+        const o = i * ncols;
+        data[o] = r.h; data[o + 1] = r.k; data[o + 2] = r.l;
+        data[o + 3] = I; data[o + 4] = r.sig || 0;
+        data[o + 5] = F; data[o + 6] = sigF;
+    }
+    return writeMtz({
+        title: parsed.title || 'xrdspace',
+        nreflections: n,
+        ncols,
+        columns: [
+            { label: 'H' }, { label: 'K' }, { label: 'L' },
+            { label: 'IMEAN', dataset: 0 }, { label: 'SIGIMEAN', dataset: 0 },
+            { label: 'F', dataset: 0 }, { label: 'SIGF', dataset: 0 },
+        ],
+        data,
+        cell,
+        spaceGroupNumber: sg.id,
+        spaceGroupName: sg.hm,
+        symops: (sg.s && sg.s.length) ? sg.s : ['x,y,z'],
+        wavelength: parsed.wavelength || 0,
+        reso: [stats.dmin, stats.dmax],
+    });
 }
 
 // Format a fraction for SHELX (e.g. 1/2, 1/4, -1/2).
@@ -291,6 +328,38 @@ export function analyzeParsed(parsed, options = {}) {
         usedLaueOps = lg.settings[0].ops;
     }
 
+    // Multi-scan empirical absorption correction (AIMLESS method, Evans &
+    // McCoy, Acta Cryst. D66, 210 (2010)).
+    //
+    // ORDERING: this runs AFTER the space-group / Laue determination above
+    // (the equivalent-reflection grouping needs the Laue class) and BEFORE the
+    // merge below, so the corrected intensities feed the merge statistics and
+    // every output file. `reflections` is replaced by the corrected non-rejected
+    // set; the data-reduction-rejected observations (negative sigma) are kept
+    // only for the unmerged output.
+    let absorption = null;
+    let unmergedRefs = allReflections;
+    if (options.abs && options.absScans) {
+        absorption = runAbsorptionCorrection(options.absScans, cell, usedLaueOps, {
+            lmaxEven: options.absLmaxEven,
+            lmaxOdd: options.absLmaxOdd,
+            maxIterations: options.absMaxIter,
+            convergenceThreshold: options.absConvThreshold,
+            minGroups: options.absMinGroups,
+            minScans: options.absMinScans,
+            useSD: options.absUseSD,
+            robust: options.absRobust,
+            robustLoss: options.absRobustLoss,
+            outlierSigma: options.absOutlierSigma,
+        });
+        absorption.report = buildAbsorptionReport(absorption, cell);
+        if (absorption.ok && Array.isArray(absorption.correctedReflections)
+            && absorption.correctedReflections.length) {
+            reflections = absorption.correctedReflections;
+            unmergedRefs = reflections.concat(allReflections.filter((r) => r.rejected));
+        }
+    }
+
     // Merge under the chosen Laue class and generate the corrected HKL output
     // (SHELX format + merged XDS_ASCII) plus a merging report.
     let merge = null;
@@ -310,7 +379,7 @@ export function analyzeParsed(parsed, options = {}) {
             // All observations (including rejected ones, whose negative sigma
             // is preserved), kept unmerged and labelled as such for programs
             // (e.g. Phenix) that prefer the redundant measurements.
-            unmergedXdsAscii: writeXdsAsciiUnmerged(allReflections, {
+            unmergedXdsAscii: writeXdsAsciiUnmerged(unmergedRefs, {
                 outputFile: options.unmergedOutput || 'structure_unmerged.hkl',
                 cell,
                 spaceGroupNumber: usedSG ? usedSG.id : undefined,
@@ -359,6 +428,9 @@ export function analyzeParsed(parsed, options = {}) {
                 shells: options.radShells,
             });
         }
+        // The absorption correction was computed above (before the merge) and
+        // its corrected intensities are already in `reflections`; just attach it.
+        if (absorption) merge.absorption = absorption;
         // Consistency of the (possibly forced) space group with the data.
         const fullSG = usedSG && usedSG.id ? sgData.find(g => g.id === usedSG.id) : null;
         if (fullSG) {
@@ -374,6 +446,8 @@ export function analyzeParsed(parsed, options = {}) {
                 sfac: options.sfac,
                 unit: options.unit,
             });
+            // Merged MTZ (REFMAC / CCP4-ready): H K L IMEAN SIGIMEAN F SIGF.
+            merge.mtz = buildMergedMtz(m.merged, cell, fullSG, parsed, stats);
         }
     }
 
@@ -513,3 +587,7 @@ export {
 
 // RADDOSE-style beam-damage analysis (--rad).
 export { analyzeBeamDamage, kPer100 } from './raddose.js';
+
+// Multi-scan empirical absorption correction (AIMLESS method,
+// P. R. Evans & A. W. McCoy, Acta Cryst. D66, 210 (2010)).
+export { runAbsorptionCorrection, buildAbsorptionReport, MultiScanAbsorptionCorr } from './abs.js';
