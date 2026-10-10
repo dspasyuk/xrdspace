@@ -463,9 +463,11 @@ Notes:
   the equivalent-set grouping is the one the auto-determination picks (or the
   forced
   `--spacegroup`), and the correction runs *after* it.
-- For **Bruker P4P** input the true lab-frame beam path is used (ORT matrix);
-  otherwise the reflection direction from the unit cell is used. Passing a
-  per-scan `orientation` through the library API uses the exact beam path.
+- For **Bruker P4P** input each scan's `ORT` matrix is used as its crystal→lab
+  orientation (the lab-frame scattering direction at the scan's reference
+  orientation); otherwise the crystal-frame reflection direction from the unit
+  cell is used. A per-scan `orientation` matrix can also be supplied through the
+  library API. Neither form applies the per-reflection rotation angle ω.
 - The **SD σ correction is on by default**; disable with `--abs-no-sd`.
 
 Example output (two taurine scans, `test/XDS_ASCII_unmerged.hkl` +
@@ -515,10 +517,15 @@ stdout without creating output files; omit it to also write the corrected
 `_shelx.hkl` / `_xds.hkl` / `_unmerged.hkl` files and `xrdspace.log`.
 
 If you have **P4P** (Bruker) scans, feed them to `--abs` directly: the
-**`ORT1/ORT2/ORT3` orientation matrix** is read from the header and used for the
-true lab-frame beam path. **SHELX five-column** scans carry no orientation, so
-convert them to unmerged XDS_ASCII first (run `xrdspace --hklin <file>` once per
-scan) and the direction-based approximation from the unit cell is used.
+**`ORT1/ORT2/ORT3` orientation matrix** is read from each header and used as
+that scan's crystal→lab orientation, so the lab-frame scattering direction (at
+the scan's reference orientation; the per-reflection rotation angle ω is not
+applied) is used instead of the crystal-frame one. Different scans then carry
+different orientations, which is what lets the multi-scan fit separate them.
+**SHELX five-column** files can also be fed directly — no conversion is needed;
+they carry no orientation, so the crystal-frame scattering direction from the
+unit cell is used, so supply `--cell` when the file has none. The same applies
+to any other orientation-less input (XDS_ASCII, COD).
 
 **Cross-checking against SADABS.** SADABS is the classic reference for
 multi-scan absorption correction, but it is closed-source and its interactive
