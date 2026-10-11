@@ -351,38 +351,74 @@ class MultiScanAbsorptionCorr {
     // The Y_00 term is omitted (fixed at 0) and run 0 is the reference, so the
     // per-group G absorbs the global level (no rank deficiency).
     // Returns the aligned member array alongside the rows.
+    // Build the log-space design ONCE. The design matrix A (SH basis + run
+    // one-hot) depends only on reflection directions and scan assignments, both
+    // of which are fixed after _matchEquivalents; the set of finite-G groups is
+    // likewise fixed (_groupG only ever assigns finite values). So A and baseW
+    // are constant across all outer iterations — only y (which depends on the
+    // per-group G) changes. Building A once instead of every iteration is the
+    // dominant cost saving for large multi-scan datasets.
+    //   y_i = log(I0_i) - G_{g(i)}      (the scale, in log space)
+    //   row_i = [Y_1 .. Y_{nTerms-1}(dir_i), one-hot run offsets (runs 1..N-1)]
+    // The Y_00 term is omitted (fixed at 0) and run 0 is the reference, so the
+    // per-group G absorbs the global level (no rank deficiency).
+    // Stores the fixed parts on this._design; y is recomputed each pass via
+    // _updateY().
     _buildDesign() {
         const nTerm = this._sh.nTerms();
         const nRun = this._scanList.length;
         const nCol = (nTerm - 1) + (nRun - 1);
         const runCol = new Map();
         for (let s = 1; s < nRun; s++) runCol.set(this._scanList[s], (nTerm - 1) + (s - 1));
-        const A = [];
-        const w = [];
-        const y = [];
-        const members = [];
+        // Two passes: count active rows, then fill one CONTIGUOUS buffer. A
+        // single flat allocation is far cheaper than one Float64Array per row
+        // (70k+ small objects) and gives the _lsq inner loop cache-friendly
+        // sequential access.
+        let n = 0;
         for (const g of this._groups.values()) {
             if (!Number.isFinite(g.G)) continue;
             for (const m of g.members) {
                 const r = m.refl;
-                if (m.rejected || r.w0 <= 0 || r.logI0 == null) continue;
-                const row = new Float64Array(nCol);
-                for (let k = 1; k < nTerm; k++) row[k - 1] = r.sh[k];
-                const rc = runCol.get(m.scanIndex);
-                if (rc !== undefined) row[rc] = 1;
-                A.push(row);
-                w.push(r.w0);
-                y.push(r.logI0 - g.G);
-                members.push(m);
+                if (r.w0 > 0 && r.logI0 != null) n++;
             }
         }
-        return { A, w, y, nCol, members };
+        const A = new Float64Array(n * nCol);
+        const baseW = new Float64Array(n);
+        const members = new Array(n);
+        const gOf = new Array(n);
+        let i = 0;
+        for (const g of this._groups.values()) {
+            if (!Number.isFinite(g.G)) continue;
+            for (const m of g.members) {
+                const r = m.refl;
+                if (r.w0 <= 0 || r.logI0 == null) continue;
+                const base = i * nCol;
+                for (let k = 1; k < nTerm; k++) A[base + k - 1] = r.sh[k];
+                const rc = runCol.get(m.scanIndex);
+                if (rc !== undefined) A[base + rc] = 1;
+                baseW[i] = r.w0;
+                members[i] = m;
+                gOf[i] = g;
+                i++;
+            }
+        }
+        this._design = { A, baseW, members, gOf, nCol, n };
+        this._y = new Float64Array(n);
+        this._updateY();
+        return this._design;
+    }
+
+    // Recompute y_i = log(I0_i) - G_{g(i)} from the current group G values.
+    // Cheap (O(n)); called once per outer iteration.
+    _updateY() {
+        const d = this._design, y = this._y;
+        for (let i = 0; i < d.n; i++) y[i] = d.members[i].refl.logI0 - d.gOf[i].G;
     }
 
     // Weighted least squares (A^T W A) c = A^T W y with Tikhonov damping,
-    // solved by Gaussian elimination with partial pivoting.
-    _lsq(A, w, y, nCol) {
-        const n = A.length;
+    // solved by Gaussian elimination with partial pivoting. A is a flat
+    // row-major buffer of n x nCol (row i at offset i*nCol).
+    _lsq(A, w, y, nCol, n) {
         const c = new Float64Array(nCol);
         if (n === 0) return c;
         const ATA = new Float64Array(nCol * nCol);
@@ -390,10 +426,12 @@ class MultiScanAbsorptionCorr {
         for (let i = 0; i < n; i++) {
             const wi = w[i];
             if (wi <= 0) continue;
-            const row = A[i];
+            const base = i * nCol;
+            const yi = y[i];
             for (let a = 0; a < nCol; a++) {
-                ATy[a] += wi * row[a] * y[i];
-                for (let b = a; b < nCol; b++) ATA[a * nCol + b] += wi * row[a] * row[b];
+                const va = A[base + a];
+                ATy[a] += wi * va * yi;
+                for (let b = a; b < nCol; b++) ATA[a * nCol + b] += wi * va * A[base + b];
             }
         }
         for (let a = 0; a < nCol; a++) {
@@ -437,29 +475,33 @@ class MultiScanAbsorptionCorr {
     //   (ln-cosh: sech^2(z); Huber: min(1, k/|z|)); gross outliers
     //   (|z| > outlierSigma) are hard-rejected and marked on the member.
     // Returns { c, nRejected }.
-    _robustFit(A, baseW, y, nCol, members) {
+    _robustFit(A, baseW, y, nCol, members, n) {
         let w = Float64Array.from(baseW);
-        let c = this._lsq(A, w, y, nCol);
-        if (!this.robust || A.length === 0) return { c, nRejected: 0 };
+        let c = this._lsq(A, w, y, nCol, n);
+        if (!this.robust || n === 0) return { c, nRejected: 0 };
         let nRejected = 0;
-        const n = A.length;
         const res = new Float64Array(n);
+        // relErr = sigma/I is constant across IRLS iterations; precompute it
+        // once instead of re-dividing for every observation on every iteration.
+        const relErr = new Float64Array(n);
+        for (let i = 0; i < n; i++) {
+            const m = members[i];
+            const r = m && m.refl ? m.refl : null;
+            relErr[i] = (r && r.I0 > 0 && r.sig0 > 0) ? r.sig0 / r.I0 : Infinity;
+        }
         for (let it = 0; it < this.maxIrls; it++) {
             nRejected = 0;
             for (let i = 0; i < n; i++) {
                 let p = 0;
-                const row = A[i];
-                for (let k = 0; k < nCol; k++) p += row[k] * c[k];
+                const base = i * nCol;
+                for (let k = 0; k < nCol; k++) p += A[base + k] * c[k];
                 res[i] = y[i] - p;
             }
             const abs = Array.from(res, Math.abs).sort((a, b) => a - b);
             const sMad = 1.4826 * (abs[abs.length >> 1] || 1e-12);
             for (let i = 0; i < n; i++) {
                 const m = members[i];
-                const r = m && m.refl ? m.refl : null;
-                // sigma-standardised residual (relative error in log space)
-                const relErr = (r && r.I0 > 0 && r.sig0 > 0) ? r.sig0 / r.I0 : Infinity;
-                const s = Math.max(isFinite(relErr) ? relErr : 0, sMad, 1e-12);
+                const s = Math.max(isFinite(relErr[i]) ? relErr[i] : 0, sMad, 1e-12);
                 const z = Math.abs(res[i]) / s;
                 if (z > this.outlierSigma) {
                     w[i] = 0;
@@ -477,7 +519,7 @@ class MultiScanAbsorptionCorr {
                 }
                 w[i] = baseW[i] * f;
             }
-            const c2 = this._lsq(A, w, y, nCol);
+            const c2 = this._lsq(A, w, y, nCol, n);
             let d = 0, mm = 0;
             for (let k = 0; k < nCol; k++) { d += (c2[k] - c[k]) * (c2[k] - c[k]); mm += c[k] * c[k]; }
             c = c2;
@@ -552,17 +594,24 @@ class MultiScanAbsorptionCorr {
                 const eps = 1e-6;
                 const JtJ = [[0, 0, 0], [0, 0, 0], [0, 0, 0]];
                 const Jtr = [0, 0, 0];
-                const comp = (q) => obs.map((o) => {
-                    const mv = modelVar(q, o);
-                    const obsVar = (o.I - o.Iav) * (o.I - o.Iav);
-                    return (obsVar - mv) / mv;
-                });
+                const comp = (q) => {
+                    const out = new Array(obs.length);
+                    for (let i = 0; i < obs.length; i++) {
+                        const o = obs[i];
+                        const mv = modelVar(q, o);
+                        const obsVar = (o.I - o.Iav) * (o.I - o.Iav);
+                        out[i] = (obsVar - mv) / mv;
+                    }
+                    return out;
+                };
                 const f0 = comp(p);
                 const cols = [];
                 for (let k = 0; k < 3; k++) {
                     const q = p.slice(); q[k] += eps;
                     const fk = comp(q);
-                    cols.push(f0.map((v, i) => (fk[i] - v) / eps));
+                    const col = new Array(f0.length);
+                    for (let i = 0; i < f0.length; i++) col[i] = (fk[i] - f0[i]) / eps;
+                    cols.push(col);
                 }
                 for (let a = 0; a < 3; a++) {
                     for (let i = 0; i < f0.length; i++) Jtr[a] += cols[a][i] * f0[i];
@@ -572,8 +621,10 @@ class MultiScanAbsorptionCorr {
                 }
                 for (let a = 0; a < 3; a++) JtJ[a][a] += 1e-6;
                 // Solve JtJ * step = -Jtr (damped).
-                const M = JtJ.map((row) => row.slice());
-                const rhs = Jtr.map((v) => -v);
+                const M = new Array(3);
+                for (let i = 0; i < 3; i++) M[i] = JtJ[i].slice();
+                const rhs = new Array(3);
+                for (let i = 0; i < 3; i++) rhs[i] = -Jtr[i];
                 for (let col = 0; col < 3; col++) {
                     let pv = col;
                     for (let row = col + 1; row < 3; row++) if (Math.abs(M[row][col]) > Math.abs(M[pv][col])) pv = row;
@@ -591,9 +642,10 @@ class MultiScanAbsorptionCorr {
                     for (let j = row + 1; j < 3; j++) s -= M[row][j] * step[j];
                     step[row] = Math.abs(M[row][row]) > 1e-14 ? s / M[row][row] : 0;
                 }
-                const cand = p.map((v, k) => v + step[k]);
+                const cand = new Array(3);
+                for (let k = 0; k < 3; k++) cand[k] = p[k] + step[k];
                 if (residual(cand) < R0) p = cand;
-                else p = p.map((v, k) => v + 0.5 * step[k]);
+                else for (let k = 0; k < 3; k++) p[k] += 0.5 * step[k];
                 if (Math.hypot(step[0], step[1], step[2]) < 1e-8) break;
             }
             // Unpack, keeping the variance model physical (p1 > 0).
@@ -629,6 +681,13 @@ class MultiScanAbsorptionCorr {
         this.iterations = 0;
         this.nRejected = 0;
         this._initGroups();
+        // The design matrix A and base weights depend only on directions and
+        // scan assignments (fixed after _matchEquivalents), so build them ONCE;
+        // each iteration only recomputes y (which tracks the per-group G).
+        const { A, baseW, members, nCol, n } = this._buildDesign();
+        if (!n) {
+            return { ok: false, error: 'NO_USABLE_ROWS', detail: 'No usable observations for the fit.' };
+        }
         let prev = null;
 
         for (let iter = 0; iter < this.maxIter; iter++) {
@@ -639,9 +698,8 @@ class MultiScanAbsorptionCorr {
             // Alternating least squares:
             //   (1) given the group log-intensities G, fit the scale model;
             //   (2) given the scale model, update G = mean(log I0 - logScale).
-            const { A, w, y, nCol, members } = this._buildDesign();
-            if (!A.length) break;
-            const { c } = this._robustFit(A, w, y, nCol, members);
+            this._updateY();
+            const { c } = this._robustFit(A, baseW, this._y, nCol, members, n);
             this._a = new Float64Array(nTerm);
             for (let k = 1; k < nTerm; k++) this._a[k] = c[k - 1];
             this._runOffset = new Map();

@@ -18,7 +18,8 @@
     "test:rad": "node tests/xrdspace-rad.js",
     "test:abs": "node tests/xrdspace-abs.js",
     "test:p4p": "node tests/xrdspace-p4p.js",
-    "build:pdb": "node scripts/build-pdb-table.js"
+    "build:pdb": "node scripts/build-pdb-table.js",
+    "demo": "node scripts/serve-demo.js"
   },
   "keywords": [
     "crystallography",

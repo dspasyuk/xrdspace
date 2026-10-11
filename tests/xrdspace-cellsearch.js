@@ -9,6 +9,7 @@ import {
     transformCell,
     cellSimilarity,
     cellToleranceWindows,
+    structureDownloads,
 } from '../src/cell-search.js';
 import { cellVolume } from '../src/analyze.js';
 
@@ -138,6 +139,35 @@ console.log('cellToleranceWindows');
     check('window aMin/aMax', close(w[0].aMin, 9.8) && close(w[0].aMax, 10.2));
     check('window betaMin/betaMax', close(w[0].betaMin, 103) && close(w[0].betaMax, 107));
     check('window gammaMin/gammaMax', close(w[0].gammaMin, 88) && close(w[0].gammaMax, 92));
+}
+
+// --- structureDownloads (offline URL construction) ---
+
+console.log('structureDownloads');
+{
+    const hits = [{ database: 'PDB', id: '3BEP' }, { database: 'COD', id: '1000017' }];
+
+    const both = structureDownloads(hits, { formats: 'both' });
+    check('both: 3 files (2 PDB + 1 COD)', both.length === 3, `got ${both.length}`);
+    check('both: PDB .pdb URL',
+        both[0].url === 'https://files.rcsb.org/download/3BEP.pdb' && both[0].format === 'pdb');
+    check('both: PDB .cif URL',
+        both[1].url === 'https://files.rcsb.org/download/3BEP.cif' && both[1].format === 'cif');
+    check('both: COD .cif URL',
+        both[2].url === 'https://www.crystallography.net/cod/1000017.cif' && both[2].format === 'cif');
+
+    const cif = structureDownloads(hits, { formats: 'cif' });
+    check('cif: only CIF (PDB + COD)', cif.length === 2 && cif.every(d => d.format === 'cif'), `got ${cif.length}`);
+
+    const pdb = structureDownloads(hits, { formats: 'pdb' });
+    check('pdb: only the PDB entry, no COD', pdb.length === 1 && pdb[0].id === '3BEP' && pdb[0].format === 'pdb');
+
+    const native = structureDownloads(hits, { formats: 'native' });
+    check('native: PDB -> .pdb, COD -> .cif',
+        native.length === 2 && native[0].format === 'pdb' && native[1].format === 'cif');
+
+    check('single hit accepts a bare object', structureDownloads({ database: 'PDB', id: '1ABC' }, { formats: 'both' }).length === 2);
+    check('empty hit list yields nothing', structureDownloads([], { formats: 'both' }).length === 0);
 }
 
 console.log('');

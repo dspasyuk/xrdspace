@@ -192,15 +192,21 @@ function fmtComponent(cx, cy, cz, t) {
 // expected in a SHELX .ins (identity omitted; for centrosymmetric groups only
 // one op per inversion pair; for centered lattices one op per centering coset).
 function shelxSymmOps(ops, centrosymmetric, lattType = 1) {
-    const parsed = ops.map(parseOperation).filter(Boolean);
+    const parsed = [];
+    for (const op of ops) {
+        const p = parseOperation(op);
+        if (p) parsed.push(p);
+    }
     const gens = shelxSymmGenerators(parsed, { centrosymmetric, latt: lattType });
-    return gens.map(p => {
+    const out = [];
+    for (const p of gens) {
         const parts = [];
         for (let i = 0; i < 3; i++) {
             parts.push(fmtComponent(p.R[i][0], p.R[i][1], p.R[i][2], p.t[i]));
         }
-        return parts.join(', ');
-    });
+        out.push(parts.join(', '));
+    }
+    return out;
 }
 
 /**
@@ -284,7 +290,8 @@ export function analyzeParsed(parsed, options = {}) {
     // can see and handle the flag. This matches XPREP and Pointless, which both
     // drop the rejected observations from the analysis.
     const allReflections = reflections;
-    reflections = reflections.filter(r => !r.rejected);
+    reflections = [];
+    for (const r of allReflections) if (!r.rejected) reflections.push(r);
     if (!reflections.length) {
         return { ok: false, error: 'No reflections parsed from the HKL file.' };
     }
@@ -356,7 +363,9 @@ export function analyzeParsed(parsed, options = {}) {
         if (absorption.ok && Array.isArray(absorption.correctedReflections)
             && absorption.correctedReflections.length) {
             reflections = absorption.correctedReflections;
-            unmergedRefs = reflections.concat(allReflections.filter((r) => r.rejected));
+            unmergedRefs = [];
+            for (const r of reflections) unmergedRefs.push(r);
+            for (const r of allReflections) if (r.rejected) unmergedRefs.push(r);
         }
     }
 
@@ -519,7 +528,11 @@ export function analyzeMtz(buffer, options = {}) {
     }
     // Resolve wavelength from the dataset records (prefer a non-zero one).
     const datasets = mtz.datasets || [];
-    const wls = datasets.map(d => d.wavelength).filter(w => Number.isFinite(w) && w > 0);
+    const wls = [];
+    for (const d of datasets) {
+        const w = d.wavelength;
+        if (Number.isFinite(w) && w > 0) wls.push(w);
+    }
     const wavelength = wls.length ? wls[wls.length - 1] : null;
     const parsed = {
         format: 'mtz',
@@ -534,10 +547,12 @@ export function analyzeMtz(buffer, options = {}) {
     };
     const result = analyzeParsed(parsed, options);
     if (result.ok) {
+        const cols = [];
+        for (const c of mtz.columns) cols.push(c.label + ':' + c.type);
         result.mtz = {
             ncols: mtz.ncols,
             nreflections: mtz.nreflections,
-            columns: mtz.columns.map(c => c.label + ':' + c.type),
+            columns: cols,
             spaceGroupNumber: mtz.spaceGroupNumber,
             spaceGroupName: mtz.spaceGroupName,
             byteOrder: mtz.byteOrder,
@@ -575,6 +590,8 @@ export {
     searchCodByCell,
     searchPdbByCell,
     searchByCell,
+    structureDownloads,
+    fetchStructureDownloads,
 } from './cell-search.js';
 
 // Offline PDB space-group validation (data/pdb-cells.json).

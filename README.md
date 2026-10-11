@@ -16,7 +16,8 @@ SHELXD / SHELXT / SHELXS.
 - **Unit-cell database search**: search the **Crystallography Open Database
   (COD)** and the **RCSB Protein Data Bank (PDB)** for structures matching a
   query cell (`--codsearch / --pdbsearch / --search`), ranked by a
-  Niggli-reduced-cell match score.
+  Niggli-reduced-cell match score, and **download** the matched `.pdb` / `.cif`
+  files with `--download <dir>`.
 - Validated against **10 000 real structures from the Crystallography Open
   Database (COD)**: the published space group is recovered exactly (PASS) or
   appears among the zero-violation candidates (NEAR) in **99.2 %** of assessed
@@ -98,6 +99,8 @@ node src/xrdspace.js hklin data.hkl hklout merged.hkl spacegroup "P 21/c"
 | `--tol <pct>` | Relative length tolerance in **%** for the cell match (default `1.0`). COD reports esds on the cell parameters (shown in the results); PDB does not, so a few % is usually appropriate for protein data |
 | `--tol-angle <deg>` | Angle tolerance in **degrees** (default `1.5`) |
 | `--limit <n>` | Maximum number of matches to report (default `20`) |
+| `--download <dir>` | After the search, **download the deposited structure file** of every reported match into `<dir>` (created if needed): PDB entries from RCSB, COD entries (CIF only) from the COD server |
+| `--format <fmt>` | Which file(s) `--download` fetches: `pdb` (RCSB legacy `.pdb`), `cif` (mmCIF; PDB and COD), `both` (`.pdb` + `.cif` for PDB hits, `.cif` for COD — the default), or `native` (the database's own format: PDB → `.pdb`, COD → `.cif`) |
 | `--valid` | **Validate** the determined space group against an offline PDB unit-cell/space-group lookup table (default `data/pdb-cells.json`). No network access: reports VERIFIED / MISMATCH / AMBIGUOUS (enantiomorph) / INDETERMINATE, with the space groups the PDB assigns to cells matching the query cell (uses `--tol` / `--tol-angle`) |
 | `--pdb-table <file>` | Path to the PDB lookup table used by `--valid` (default: `data/pdb-cells.json`). Build it once with `node scripts/build-pdb-table.js` |
 | `--rad` | **RADDOSE-style beam-damage analysis**: use each observation's rotation angle (PSI column) as the dose coordinate and compare the mean intensity recorded *late* in the scan with that recorded *early*, per resolution shell (R = ⟨I⟩_late/⟨I⟩_early; R < 1 = decayed). Needs input with a per-observation rotation angle (**unmerged XDS_ASCII** with a PSI column, or **Bruker P4P**, whose ω is the rotation angle); on other input it reports why it is not usable. The per-shell table is written to the consolidated report (`xrdspace.log`) |
@@ -242,6 +245,22 @@ node src/xrdspace.js --pdbsearch --cell "40.203 70.080 73.872 113.284 92.073 99.
 node src/xrdspace.js --codsearch --cell "4.7606 4.7606 12.994 90 90 120"
 node src/xrdspace.js --search    --cell "10.86 8.70 7.76 90 102.9 90" --tol 1.5 --tol-angle 2 --limit 10
 ```
+
+You can also **download the matched structures** straight from the databases:
+
+```sh
+node src/xrdspace.js --pdbsearch --cell "40.203 70.080 73.872 113.284 92.073 99.361" \
+    --download structures/            # 3BEP.pdb and 3BEP.cif (default --format both)
+node src/xrdspace.js --codsearch --cell "4.7606 4.7606 12.994 90 90 120" \
+    --download structures/ --format cif   # COD is CIF only
+node src/xrdspace.js --pdbsearch --cell "40.203 70.080 73.872 113.284 92.073 99.361" \
+    --download structures/ --format pdb   # RCSB legacy .pdb only
+```
+
+`--download <dir>` creates `<dir>` if needed and writes one file per hit per
+requested format, named by the database identifier. PDB entries come from
+`files.rcsb.org` (both legacy `.pdb` and mmCIF `.cif` are available); COD entries
+are CIF only (`www.crystallography.net/cod`).
 
 How the matching works:
 

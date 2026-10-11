@@ -16,7 +16,7 @@ import { fileURLToPath } from 'node:url';
 
 import { analyzeParsed, cellVolume } from './index.js';
 import { parseHkl } from './hkl-parser.js';
-import { searchByCell } from './cell-search.js';
+import { searchByCell, structureDownloads, fetchStructureDownloads } from './cell-search.js';
 import { loadPdbLookup, validateSpaceGroupAgainstPdb } from './pdb-lookup.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -64,6 +64,14 @@ Unit-cell database search (no HKL file needed):
                       slightly wider tolerance helps there.
   --tol-angle <deg>   Angle tolerance in degrees (default 1.5).
   --limit <n>         Maximum number of matches to report (default 20).
+  --download <dir>    Download the deposited structure file of every reported
+                      match into <dir> (created if needed). PDB entries come from
+                      RCSB, COD entries (CIF only) from the COD server.
+  --format <fmt>      Which file(s) --download fetches:
+                        pdb    RCSB legacy PDB format (.pdb)
+                        cif    mmCIF (.cif; PDB and COD)
+                        both   .pdb and .cif for PDB hits, .cif for COD (default)
+                        native the database's own format (PDB -> .pdb, COD -> .cif)
 
 Space group:
   --spacegroup <sg>   Force a specific space group (number or Hermann-Mauguin
@@ -175,7 +183,9 @@ function fmtShellTable(shells) {
     ];
     const cell = (v, w, a) => (a === 'l' ? String(v).padEnd(w) : String(v).padStart(w));
     const pct = (v) => (v == null ? '-' : (v * 100).toFixed(1) + '%');
-    const out = ['  ' + cols.map(c => cell(c[0], c[1], c[2])).join(' ')];
+    const header = [];
+    for (const c of cols) header.push(cell(c[0], c[1], c[2]));
+    const out = ['  ' + header.join(' ')];
     for (const s of shells) {
         const vals = [
             `${s.dHi.toFixed(2)}-${s.dLo.toFixed(2)}`,
@@ -184,7 +194,9 @@ function fmtShellTable(shells) {
             s.meanIsig.toFixed(1), s.ccHalf == null ? '-' : s.ccHalf.toFixed(3),
             (s.negFrac * 100).toFixed(0) + '%',
         ];
-        out.push('  ' + vals.map((v, i) => cell(v, cols[i][1], cols[i][2])).join(' '));
+        const cells = [];
+        for (let i = 0; i < vals.length; i++) cells.push(cell(vals[i], cols[i][1], cols[i][2]));
+        out.push('  ' + cells.join(' '));
     }
     return out;
 }
@@ -426,6 +438,7 @@ async function promptCell() {
     const N_VALUES = {
         hklin: 1, hklout: 1, xdsout: 1, unmergedout: 1, mtzout: 1, spacegroup: 1, sg: 1, laue: 1, sigthreshold: 1,
         sfac: 1, formula: 1, log: 1, tol: 1, 'tol-angle': 1, limit: 1, 'pdb-table': 1,
+        download: 1, format: 1,
         cell: 6, resolution: 2,
         chiral: 0, 'no-chiral': 0, nochiral: 0, valid: 0,
         'no-write': 0, nowrite: 0,
@@ -486,7 +499,7 @@ function parseSfacInput(input) {
 }
 
 function parseArgs(argv) {
-    const args = { hklin: null, hklout: null, xdsout: null, unmergedOut: null, mtzout: null, cell: null, spaceGroup: null, laue: null, resolution: null, sigThreshold: 5, sfac: null, log: null, chiral: null, help: false, version: false, search: null, codsearch: false, pdbsearch: false, tol: 1.0, tolAngle: 1.5, limit: 20, valid: false, pdbTable: null, noWrite: false, rad: false, radMinIsig: 2, radEarlyFrac: 0.25, radLateFrac: 0.25, radShells: 10, hklinFiles: [], abs: false, absCycles: 30, absOrder: 6, absOutlier: 6, absRobust: 'lncosh', absNoSD: false, absMinScans: null };
+    const args = { hklin: null, hklout: null, xdsout: null, unmergedOut: null, mtzout: null, cell: null, spaceGroup: null, laue: null, resolution: null, sigThreshold: 5, sfac: null, log: null, chiral: null, help: false, version: false, search: null, codsearch: false, pdbsearch: false, tol: 1.0, tolAngle: 1.5, limit: 20, download: null, format: 'both', valid: false, pdbTable: null, noWrite: false, rad: false, radMinIsig: 2, radEarlyFrac: 0.25, radLateFrac: 0.25, radShells: 10, hklinFiles: [], abs: false, absCycles: 30, absOrder: 6, absOutlier: 6, absRobust: 'lncosh', absNoSD: false, absMinScans: null };
     let i = 0;
     while (i < argv.length) {
         const a = argv[i];
@@ -527,6 +540,7 @@ function parseArgs(argv) {
             || a === 'cell' || a === 'resolution' || a === 'sigthreshold' || a === 'sfac' || a === 'formula' || a === 'log'
             || a === 'chiral' || a === 'no-chiral' || a === 'nochiral'
             || a === 'search' || a === 'codsearch' || a === 'pdbsearch' || a === 'tol' || a === 'tol-angle' || a === 'limit'
+            || a === 'download' || a === 'format'
             || a === 'valid' || a === 'pdb-table'
             || a === 'rad' || a === 'rad-minisig' || a === 'rad-early' || a === 'rad-late' || a === 'rad-shells'
             || a === 'abs' || a === 'abs-cycles' || a === 'abs-order' || a === 'abs-outlier'
@@ -591,6 +605,11 @@ function parseArgs(argv) {
             const n = parseInt(vals[0], 10);
             if (!Number.isFinite(n) || n <= 0) throw new Error('limit expects a positive integer');
             args.limit = n;
+        } else if (key === 'download') args.download = vals[0];
+        else if (key === 'format') {
+            const v = String(vals[0]).toLowerCase();
+            if (!['pdb', 'cif', 'both', 'native'].includes(v)) throw new Error('format expects pdb | cif | both | native');
+            args.format = v;
         } else if (key === 'spacegroup') args.spaceGroup = vals[0];
         else if (key === 'laue') args.laue = vals[0];
         else if (key === 'sigthreshold') {
@@ -719,6 +738,43 @@ function printCellSearch(queryCell, args) {
     console.log('==============================================');
 }
 
+// Download the deposited structure file(s) of the search hits into args.download.
+// PDB entries come from RCSB (PDB and/or mmCIF); COD entries are CIF only.
+async function downloadSearchResults(results, args) {
+    const dir = path.resolve(args.download);
+    fs.mkdirSync(dir, { recursive: true });
+    const downloads = structureDownloads(results, { formats: args.format });
+    console.log('');
+    console.log('----------------------------------------------');
+    if (!downloads.length) {
+        console.log('  Download      : nothing to fetch (no matched structures).');
+        console.log('==============================================');
+        return;
+    }
+    console.log(`  Download      : ${downloads.length} file(s) -> ${dir}`);
+    let fetched;
+    try {
+        fetched = await fetchStructureDownloads(downloads);
+    } catch (e) {
+        console.log(`  Download failed: ${e.message}`);
+        console.log('==============================================');
+        return;
+    }
+    let saved = 0;
+    for (const f of fetched) {
+        if (f.error) {
+            console.log(`    FAILED  ${f.database} ${f.id} (${f.format}): ${f.error}`);
+            continue;
+        }
+        const dest = path.join(dir, path.basename(f.filename));
+        fs.writeFileSync(dest, f.text, 'utf8');
+        saved++;
+        console.log(`    saved   ${f.database} ${String(f.id).padEnd(7)} -> ${dest}`);
+    }
+    console.log(`  Saved ${saved}/${fetched.length} file(s).`);
+    console.log('==============================================');
+}
+
 // Format the offline-PDB space-group validation as report body lines.
 function formatPdbValidation(v, opts) {
     const L = [];
@@ -733,10 +789,14 @@ function formatPdbValidation(v, opts) {
         return L.join('\n');
     }
     L.push(reportKv('Matching PDB', `${v.total} entr${v.total === 1 ? 'y' : 'ies'}`));
-    L.push(reportKv('PDB space groups', v.sgCounts.map(s => s.hm ? `${s.hm} (No. ${s.sg}) x${s.count}` : `No. ${s.sg} x${s.count}`).join(', ')));
+    const sgParts = [];
+    for (const s of v.sgCounts) sgParts.push(s.hm ? `${s.hm} (No. ${s.sg}) x${s.count}` : `No. ${s.sg} x${s.count}`);
+    L.push(reportKv('PDB space groups', sgParts.join(', ')));
     const shown = v.matches.slice(0, 5);
     if (shown.length) {
-        L.push(reportKv('Matches', `${shown.map(m => `${m.id} (No. ${m.sg})`).join(', ')}${v.total > shown.length ? `, +${v.total - shown.length} more` : ''}`));
+        const ids = [];
+        for (const m of shown) ids.push(`${m.id} (No. ${m.sg})`);
+        L.push(reportKv('Matches', `${ids.join(', ')}${v.total > shown.length ? `, +${v.total - shown.length} more` : ''}`));
     }
     const d = opts.determined;
     L.push(reportKv('Determined SG', d ? `${d.hm} (No. ${d.id})` : `No. ${v.determinedSg}`));
@@ -793,6 +853,9 @@ async function main() {
                 limit: args.limit,
             });
             printCellSearch(queryCell, { ...r, tol: args.tol, tolAngle: args.tolAngle, limit: args.limit });
+            if (args.download) {
+                await downloadSearchResults(r.results, args);
+            }
         } catch (e) {
             console.error(`xrdspace: cell search failed: ${e.message}`);
             process.exit(1);
@@ -810,16 +873,23 @@ async function main() {
     // input). The first is the primary for space-group determination; all are
     // concatenated for the analysis, and with --abs each is a scan for the
     // absorption correction. A single file therefore runs single-scan mode.
-    const filePaths = args.hklinFiles.map((f) => path.resolve(f));
+    const filePaths = [];
+    for (const f of args.hklinFiles) filePaths.push(path.resolve(f));
     for (const fp of filePaths) {
         if (!fs.existsSync(fp)) {
             console.error(`xrdspace: file not found: ${fp}`);
             process.exit(1);
         }
     }
-    const parsedObjects = filePaths.map((fp) => parseHkl(fs.readFileSync(fp, 'utf8')));
+    const parsedObjects = [];
+    const allReflections = [];
+    for (const fp of filePaths) {
+        const p = parseHkl(fs.readFileSync(fp, 'utf8'));
+        parsedObjects.push(p);
+        for (const r of p.reflections) allReflections.push(r);
+    }
     const primary = parsedObjects[0];
-    const combined = { ...primary, reflections: parsedObjects.flatMap((p) => p.reflections) };
+    const combined = { ...primary, reflections: allReflections };
 
     let cell = args.cell;
     if (!cell && !primary.cell) {
@@ -836,9 +906,11 @@ async function main() {
 
     // Absorption scans: one per --hklin file. Single file -> single-scan mode
     // (symmetry-equivalent reflections, minScans = 1).
-    const absScans = args.abs
-        ? parsedObjects.map((p) => ({ reflections: p.reflections, orientation: p.orientation }))
-        : null;
+    let absScans = null;
+    if (args.abs) {
+        absScans = [];
+        for (const p of parsedObjects) absScans.push({ reflections: p.reflections, orientation: p.orientation });
+    }
     const absMinScans = args.absMinScans != null
         ? args.absMinScans
         : (absScans && absScans.length >= 2 ? 2 : 1);
