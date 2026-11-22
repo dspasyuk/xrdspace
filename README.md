@@ -13,6 +13,10 @@ SHELXD / SHELXT / SHELXS.
   **library** (import `analyzeHkl` from your own code or server).
 - Ships with a complete dictionary of all **230 space groups** (every setting,
   with full general-position symmetry operations).
+- **Multi-dataset merging**: combine several scans of one crystal (different
+  kappa/φ settings, wedges, or crystals) given as multiple `--hklin` files —
+  **HKL and MTZ inputs can be mixed** — with XSCALE-style relative `K·exp(−B/2d²)`
+  scaling, unit-cell cross-checks and per-dataset agreement statistics.
 - **Unit-cell database search**: search the **Crystallography Open Database
   (COD)** and the **RCSB Protein Data Bank (PDB)** for structures matching a
   query cell (`--codsearch / --pdbsearch / --search`), ranked by a
@@ -65,6 +69,7 @@ cd xrdspace
 
 ```
 node src/xrdspace.js --hklin <file.hkl> [options]
+node src/xrdspace.js --hklin <scan1.hkl> <scan2.hkl> [<scan3.mtz> ...] [options]   # multi-dataset merge
 node src/xrdspace.js --search --cell "a b c alpha beta gamma" [options]
 ```
 
@@ -426,11 +431,6 @@ each input file carries its own arbitrary scale and a slightly different
 overall temperature factor (beam attenuation, absorption, decay). Passing all
 of them to `--hklin` merges them into one dataset, XSCALE-style:
 
-```sh
-# Two kappa settings of one crystal, second scan fed as MTZ:
-node src/xrdspace.js --hklin XDS_ASCII-1.HKL scan2.mtz --mtzout merged.mtz
-```
-
 - **Any mix of formats** is accepted: XDS_ASCII, SHELX five-column, COD `.hkl`,
   Bruker P4P and binary **MTZ** (auto-detected by its magic bytes; read
   `IMEAN/SIGIMEAN`, `I/SIGI`, `F/SIGF`, … columns, overridable with
@@ -456,7 +456,43 @@ node src/xrdspace.js --hklin XDS_ASCII-1.HKL scan2.mtz --mtzout merged.mtz
   *direction*-dependent absorption of differently oriented scans), so the K/B
   scaling steps aside and only the dataset statistics are reported.
 
-Example (two 180° kappa scans of one crystal, P1̄, 0.66 Å):
+#### Usage examples
+
+```sh
+# Merge two kappa scans of one crystal (XDS_ASCII). The relative K/B scaling
+# is on by default; the outputs are written next to the first input file
+# (<name>_shelx.hkl, <name>_xds.hkl, <name>_unmerged.hkl, <name>_merged.mtz,
+# xrdspace.log):
+node src/xrdspace.js --hklin XDS_ASCII-1.HKL XDS_ASCII-2.HKL
+
+# Same, with explicit output names for the merged files:
+node src/xrdspace.js --hklin XDS_ASCII-1.HKL XDS_ASCII-2.HKL \
+    --hklout merged_shelx.hkl --xdsout merged_xds.hkl \
+    --unmergedout merged_unmerged.hkl --mtzout merged.mtz --log merge.log
+
+# Mixed input: first scan as XDS_ASCII, second as (unmerged) MTZ:
+node src/xrdspace.js --hklin scan1.hkl scan2.mtz --mtzout merged.mtz
+
+# Read specific MTZ columns (e.g. I/SIGI instead of the first auto-detected
+# intensity/sigma pair):
+node src/xrdspace.js --hklin scan1.hkl scan2.mtz --intensity I --sigma SIGI
+
+# Three wedges, force the space group known from a previous run:
+node src/xrdspace.js --hklin w1.hkl w2.hkl w3.hkl --spacegroup "P 21/c"
+
+# Combine with the multi-scan absorption correction (--abs): the spherical-
+# harmonic model handles the relative scales itself, the K/B step steps aside:
+node src/xrdspace.js --hklin scan1.hkl scan2.hkl --abs
+
+# Merge the files as-read, without relative scaling (comparison runs):
+node src/xrdspace.js --hklin scan1.hkl scan2.hkl --no-dscale
+
+# Analyse only — print the report (incl. the dataset table) to stdout,
+# write nothing:
+node src/xrdspace.js --hklin scan1.hkl scan2.hkl --no-write
+```
+
+Example report (two 180° kappa scans of one crystal, P1̄, 0.66 Å):
 
 ```
   MULTI-DATASET MERGE (2 DATASETS)
@@ -877,6 +913,42 @@ import { analyzeMtz } from './src/index.js';
 
 const result = analyzeMtz(fs.readFileSync('data.mtz'));
 // result.ok, result.summary.bestSpaceGroup, result.mtz, result.merge, ...
+```
+
+### Multi-dataset merging (API)
+
+Combine any mix of HKL/MTZ files: parse each with `parseReflectionFile`, tag
+its reflections with a `.dataset` index, and pass the per-file metadata via
+`options.datasets`. The relative K/B scaling runs automatically (disable with
+`dscale: false`); the summary lands in `result.merge.datasets`.
+
+```js
+import fs from 'node:fs';
+import { analyzeParsed, parseReflectionFile } from './src/index.js';
+
+const files = ['scan1_XDS_ASCII.HKL', 'scan2.mtz'];
+const datasets = [];
+const reflections = [];
+let primary = null;
+for (let i = 0; i < files.length; i++) {
+    const p = parseReflectionFile(fs.readFileSync(files[i]));   // MTZ auto-detected
+    if (i === 0) primary = p;                                   // primary: cell/SG determination
+    for (const r of p.reflections) { r.dataset = i; reflections.push(r); }
+    datasets.push({ name: files[i], format: p.format, cell: p.cell, nObs: p.reflections.length });
+}
+
+const result = analyzeParsed({ ...primary, reflections }, {
+    datasets,             // enables the multi-dataset summary + cell cross-check
+    // dscale: false,     // merge as-read (no relative K/B scaling)
+    quality: true,
+});
+
+for (const d of result.merge.datasets.items) {
+    console.log(d.name, 'K =', d.K.toFixed(4), 'B =', d.B.toFixed(3),
+        'R vs others:', d.rBefore.toFixed(4), '->', d.rAfter.toFixed(4));
+}
+console.log(result.merge.datasets.cellCheck.ok ? 'cells compatible' : 'CHECK INDEXING');
+// result.merge.{shelxHkl, xdsAscii, mtz, ...} carry the scaled, merged data
 ```
 
 ### Other exports
