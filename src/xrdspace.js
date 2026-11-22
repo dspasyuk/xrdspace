@@ -14,14 +14,13 @@ import path from 'node:path';
 import readline from 'node:readline';
 import { fileURLToPath } from 'node:url';
 
-import { analyzeParsed, cellVolume } from './index.js';
-import { parseHkl } from './hkl-parser.js';
+import { analyzeParsed, cellVolume, parseReflectionFile } from './index.js';
 import { searchByCell, structureDownloads, fetchStructureDownloads } from './cell-search.js';
 import { loadPdbLookup, validateSpaceGroupAgainstPdb } from './pdb-lookup.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
-const VERSION = '1.0.0';
+const VERSION = '1.2.0';
 
 const HELP = `
 xrdspace — space-group determination and reflection merging (POINTLESS-style CLI)
@@ -32,12 +31,14 @@ Usage:
 
 Input / output:
    --hklin <file> [<file> ...]
-                       Input HKL file(s) (XDS_ASCII, SHELX five-column, or
-                       Bruker P4P). Give all scans of the same crystal as one
-                       list, e.g. --hklin scan1.hkl scan2.hkl scan3.hkl. The
-                       first is used for space-group determination, all are
-                       combined for the analysis, and with --abs each file is a
-                       scan. (Repeating --hklin also works.)
+                       Input reflection file(s): XDS_ASCII, SHELX five-column,
+                       Bruker P4P, or MTZ (binary MTZ is auto-detected, so HKL
+                       and MTZ inputs can be mixed freely). Give all scans /
+                       datasets of the same crystal as one list, e.g.
+                       --hklin scan1.hkl scan2.hkl scan3.mtz. The first is used
+                       for space-group determination, all are combined for the
+                       analysis (see MULTI-DATASET MERGING below), and with
+                       --abs each file is a scan. (Repeating --hklin also works.)
   --hklout <file>     Output UNMERGED HKL file, SHELX format (default: <input>_shelx.hkl).
                       SHELX (HKLF 4) does its own merging, so the raw observations
                       are written; a merged SHELX file is also available in the API
@@ -72,6 +73,30 @@ Unit-cell database search (no HKL file needed):
                         cif    mmCIF (.cif; PDB and COD)
                         both   .pdb and .cif for PDB hits, .cif for COD (default)
                         native the database's own format (PDB -> .pdb, COD -> .cif)
+
+Multi-dataset merging (XSCALE-style; active whenever two or more input files
+   are given):
+                       Each --hklin file is one dataset of the same crystal.
+                       The unit cells are cross-checked (deviations beyond
+                       ~1% / ~1 deg are flagged), each dataset is put on the
+                       common scale with a fitted K*exp(-B/(2 d^2)) correction
+                       relative to the common weighted mean (AIMLESS/XSCALE-
+                       style), and all observations are merged together. The
+                       MULTI-DATASET MERGE report section lists the per-dataset
+                       scale, B factor and agreement R (vs the other datasets,
+                       before and after scaling). All merged output files carry
+                       the scaled intensities.
+    --no-dscale           Merge the files without the relative K/B scaling
+                          (intensities are combined exactly as read).
+    --dscale-cycles <n>   Scaling refinement cycles (default 5).
+    --intensity <label>   MTZ intensity column to read (default: first found
+                          of IMEAN, F, FP, FMEAN, I, IOBS, ...).
+    --sigma <label>       MTZ sigma column to read (default: first found of
+                          SIGIMEAN, SIGF, SIGI, ...).
+                       Note: with --abs the multi-scan absorption correction
+                       models the relative scales itself (per-scan offsets +
+                       spherical harmonics), so the K/B scaling is skipped and
+                       only the dataset statistics are reported.
 
 Space group:
   --spacegroup <sg>   Force a specific space group (number or Hermann-Mauguin
@@ -231,6 +256,53 @@ function fmtArtifacts(a) {
     return L;
 }
 
+// Multi-dataset merge block: per-file cell agreement, relative scales and
+// inter-dataset agreement (XSCALE-style merging of several HKL/MTZ files).
+function fmtDatasets(ds) {
+    const L = [];
+    L.push(reportKv('Datasets', String(ds.count)));
+    L.push(reportKv('Relative scaling', ds.scaling));
+    const cc = ds.cellCheck;
+    if (cc) {
+        let maxLen = 0, maxAng = 0;
+        for (const row of cc.rows) {
+            if (!row) continue;
+            if (row.maxLenPct > maxLen) maxLen = row.maxLenPct;
+            if (row.maxAngDeg > maxAng) maxAng = row.maxAngDeg;
+        }
+        L.push(reportKv('Cell agreement',
+            `max deviation ${maxLen.toFixed(2)}% lengths, ${maxAng.toFixed(2)} deg angles — ` +
+            (cc.ok ? 'compatible' : 'CHECK INDEXING')));
+    }
+    L.push('');
+    L.push('    #  file                          format       #obs   d-range(A)       K    B(A^2)   R-vs-others');
+    for (const it of ds.items) {
+        const drange = it.dmin != null && it.dmax != null
+            ? `${it.dmax.toFixed(2)}-${it.dmin.toFixed(2)}` : '-';
+        const K = it.K != null ? it.K.toFixed(4) : '-';
+        const B = it.B != null ? it.B.toFixed(3) : '-';
+        let R = '-';
+        if (it.rBefore != null) {
+            R = `${(it.rBefore * 100).toFixed(2)}%`;
+            if (it.rAfter != null && it.rAfter !== it.rBefore) R += ` -> ${(it.rAfter * 100).toFixed(2)}%`;
+        }
+        L.push('  ' + String(it.index + 1).padStart(3)
+            + '  ' + String(it.name).slice(0, 28).padEnd(28)
+            + '  ' + String(it.format || '').padEnd(10)
+            + String(it.nObs != null ? it.nObs : '-').padStart(8)
+            + '  ' + drange.padStart(13)
+            + '  ' + K.padStart(7)
+            + '  ' + B.padStart(7)
+            + '   ' + R);
+    }
+    L.push('');
+    L.push('    R-vs-others: agreement of each dataset with the (scaled) mean of the');
+    L.push('    other datasets on their common well-measured reflections (lower is better).');
+    L.push('    K/B: fitted relative scale and temperature factor of each dataset');
+    L.push("    (I' = I * K * exp(-B/(2 d^2)), anchored on the observation-weighted mean).");
+    return L;
+}
+
 // RADDOSE-style beam-damage report block (per-shell I_late/I_early decay).
 function fmtBeamDamage(bd) {
     const L = [];
@@ -339,6 +411,13 @@ export function buildReport(result, opts = {}) {
     }
     L.push('');
 
+    if (result.merge && result.merge.datasets && result.merge.datasets.count >= 2) {
+        const ds = result.merge.datasets;
+        L.push(...reportSection(`MULTI-DATASET MERGE (${ds.count} DATASETS)`));
+        L.push(...fmtDatasets(ds));
+        L.push('');
+    }
+
     if (result.merge) {
         const st = result.merge.statistics;
         L.push(...reportSection('MERGING STATISTICS'));
@@ -446,6 +525,8 @@ async function promptCell() {
         rad: 0, 'rad-minisig': 1, 'rad-early': 1, 'rad-late': 1, 'rad-shells': 1,
         abs: 0, 'abs-cycles': 1, 'abs-order': 1, 'abs-outlier': 1,
         'abs-robust': 1, 'abs-no-sd': 0, 'abs-min-scans': 1,
+        intensity: 1, sigma: 1,
+        dscale: 0, 'no-dscale': 0, 'dscale-cycles': 1,
     };
     // Recognized option keywords (used to stop --hklin's variadic file list).
     const KNOWN_KEYWORDS = new Set(Object.keys(N_VALUES));
@@ -499,7 +580,7 @@ function parseSfacInput(input) {
 }
 
 function parseArgs(argv) {
-    const args = { hklin: null, hklout: null, xdsout: null, unmergedOut: null, mtzout: null, cell: null, spaceGroup: null, laue: null, resolution: null, sigThreshold: 5, sfac: null, log: null, chiral: null, help: false, version: false, search: null, codsearch: false, pdbsearch: false, tol: 1.0, tolAngle: 1.5, limit: 20, download: null, format: 'both', valid: false, pdbTable: null, noWrite: false, rad: false, radMinIsig: 2, radEarlyFrac: 0.25, radLateFrac: 0.25, radShells: 10, hklinFiles: [], abs: false, absCycles: 30, absOrder: 6, absOutlier: 6, absRobust: 'lncosh', absNoSD: false, absMinScans: null };
+    const args = { hklin: null, hklout: null, xdsout: null, unmergedOut: null, mtzout: null, cell: null, spaceGroup: null, laue: null, resolution: null, sigThreshold: 5, sfac: null, log: null, chiral: null, help: false, version: false, search: null, codsearch: false, pdbsearch: false, tol: 1.0, tolAngle: 1.5, limit: 20, download: null, format: 'both', valid: false, pdbTable: null, noWrite: false, rad: false, radMinIsig: 2, radEarlyFrac: 0.25, radLateFrac: 0.25, radShells: 10, hklinFiles: [], abs: false, absCycles: 30, absOrder: 6, absOutlier: 6, absRobust: 'lncosh', absNoSD: false, absMinScans: null, intensity: null, sigma: null, dscale: null, dscaleCycles: 5 };
     let i = 0;
     while (i < argv.length) {
         const a = argv[i];
@@ -544,7 +625,9 @@ function parseArgs(argv) {
             || a === 'valid' || a === 'pdb-table'
             || a === 'rad' || a === 'rad-minisig' || a === 'rad-early' || a === 'rad-late' || a === 'rad-shells'
             || a === 'abs' || a === 'abs-cycles' || a === 'abs-order' || a === 'abs-outlier'
-            || a === 'abs-robust' || a === 'abs-no-sd' || a === 'abs-min-scans') {
+            || a === 'abs-robust' || a === 'abs-no-sd' || a === 'abs-min-scans'
+            || a === 'intensity' || a === 'sigma'
+            || a === 'dscale' || a === 'no-dscale' || a === 'dscale-cycles') {
             key = a;
             n = N_VALUES[a];
         } else if (!a.startsWith('-')) {
@@ -662,6 +745,14 @@ function parseArgs(argv) {
             const t = parseInt(vals[0], 10);
             if (!Number.isFinite(t) || t < 1) throw new Error('abs-min-scans expects a positive integer');
             args.absMinScans = t;
+        } else if (key === 'intensity') args.intensity = vals[0];
+        else if (key === 'sigma') args.sigma = vals[0];
+        else if (key === 'dscale') args.dscale = true;
+        else if (key === 'no-dscale') args.dscale = false;
+        else if (key === 'dscale-cycles') {
+            const t = parseInt(vals[0], 10);
+            if (!Number.isFinite(t) || t < 0) throw new Error('dscale-cycles expects a non-negative integer');
+            args.dscaleCycles = t;
         }
         i++;
     }
@@ -869,10 +960,12 @@ async function main() {
         process.exit(1);
     }
 
-    // Every --hklin file is a scan of the same crystal (AIMLESS multi-dataset
-    // input). The first is the primary for space-group determination; all are
-    // concatenated for the analysis, and with --abs each is a scan for the
-    // absorption correction. A single file therefore runs single-scan mode.
+    // Every --hklin file is one dataset / scan of the same crystal (AIMLESS /
+    // XSCALE multi-dataset input). The first is the primary for space-group
+    // determination; all are tagged with their dataset index and combined for
+    // the analysis (with per-dataset relative scaling unless --no-dscale), and
+    // with --abs each is a scan for the absorption correction. A single file
+    // therefore runs single-dataset mode. Binary MTZ files are auto-detected.
     const filePaths = [];
     for (const f of args.hklinFiles) filePaths.push(path.resolve(f));
     for (const fp of filePaths) {
@@ -883,10 +976,25 @@ async function main() {
     }
     const parsedObjects = [];
     const allReflections = [];
-    for (const fp of filePaths) {
-        const p = parseHkl(fs.readFileSync(fp, 'utf8'));
+    const datasetsMeta = [];
+    for (let di = 0; di < filePaths.length; di++) {
+        const fp = filePaths[di];
+        let p;
+        try {
+            p = parseReflectionFile(fs.readFileSync(fp), { intensity: args.intensity, sigma: args.sigma });
+        } catch (e) {
+            console.error(`xrdspace: cannot read ${fp}: ${e.message}`);
+            process.exit(1);
+        }
+        for (const r of p.reflections) { r.dataset = di; allReflections.push(r); }
         parsedObjects.push(p);
-        for (const r of p.reflections) allReflections.push(r);
+        datasetsMeta.push({
+            name: path.basename(fp),
+            format: p.format,
+            cell: p.cell,
+            nObs: p.reflections.length,
+            wavelength: p.wavelength,
+        });
     }
     const primary = parsedObjects[0];
     const combined = { ...primary, reflections: allReflections };
@@ -925,6 +1033,9 @@ async function main() {
         unit: sfacOpts.unit,
         chiral: args.chiral,
         quality: true,
+        datasets: datasetsMeta,
+        dscale: args.dscale,
+        dscaleCycles: args.dscaleCycles,
         rad: args.rad,
         radMinIsig: args.radMinIsig,
         radEarlyFrac: args.radEarlyFrac,
@@ -947,6 +1058,13 @@ async function main() {
     const base = path.parse(filePaths[0]).name;
     const outputFiles = [];
     const notes = [];
+    // Surface multi-dataset cell-agreement warnings in the report.
+    if (result.merge && result.merge.datasets && result.merge.datasets.cellCheck) {
+        for (const w of result.merge.datasets.cellCheck.warnings) notes.push(w);
+    }
+    if (datasetsMeta.length >= 2 && result.merge && !args.noWrite) {
+        notes.push(`${datasetsMeta.length} datasets merged; output files carry the combined (scaled) data`);
+    }
 
     // Validate the determined space group against the offline PDB lookup table.
     let validationText = null;

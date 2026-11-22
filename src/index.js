@@ -20,6 +20,7 @@ import { mergeReflections, computeMergeStatistics, resolutionShellStats, artifac
 import { parseOperation, LATT_CENTERING, shelxSymmGenerators } from './op-math.js';
 import { analyzeBeamDamage } from './raddose.js';
 import { runAbsorptionCorrection, buildAbsorptionReport, MultiScanAbsorptionCorr } from './abs.js';
+import { compareDatasetCells, datasetCount, scaleDatasets } from './dataset-scale.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
@@ -243,6 +244,97 @@ export function analyzeHkl(text, options = {}) {
     return analyzeParsed(parsed, options);
 }
 
+// Read a reflection file of any supported format (bytes or string) and return
+// the normalized parsed-HKL object that analyzeParsed expects:
+// { format, title, cell, wavelength, reflections, merge, friedelsLaw, geometry,
+//   orientation, ... }.
+// Binary MTZ files are recognized by their "MTZ " magic; anything else is
+// parsed as text (XDS_ASCII, SHELX five-column, COD, Bruker P4P). For MTZ
+// input, options.intensity / options.sigma select the columns to read.
+export function parseReflectionFile(buffer, options = {}) {
+    if (typeof buffer === 'string') return parseHkl(buffer);
+    const u8 = buffer instanceof Uint8Array ? buffer : new Uint8Array(buffer);
+    const isMtz = u8.length >= 4
+        && u8[0] === 0x4d && u8[1] === 0x54 && u8[2] === 0x5a && u8[3] === 0x20;
+    if (!isMtz) return parseHkl(Buffer.from(u8).toString('utf8'));
+
+    const mtz = parseMtz(u8);
+    const reflections = getReflections(mtz, options);
+    // Wavelength from the dataset records (last non-zero one, as in analyzeMtz).
+    let wavelength = null;
+    for (const d of mtz.datasets || []) {
+        if (Number.isFinite(d.wavelength) && d.wavelength > 0) wavelength = d.wavelength;
+    }
+    // An MTZ carrying merged columns (IMEAN/F/...) is a merged input; raw
+    // per-observation columns (I/SIGI, e.g. from XDSCONV) are unmerged.
+    const labels = new Set();
+    for (const c of mtz.columns) labels.add(String(c.label).toUpperCase());
+    const merge = labels.has('IMEAN') || !(labels.has('I') || labels.has('I_OBS') || labels.has('IOBS'));
+    return {
+        format: 'mtz',
+        title: mtz.title || '',
+        cell: mtz.cell,
+        spaceGroupNumber: mtz.spaceGroupNumber,
+        spaceGroupName: mtz.spaceGroupName,
+        wavelength,
+        merge,
+        friedelsLaw: null,
+        geometry: null,
+        orientation: null,
+        reflections,
+    };
+}
+
+// Assemble the multi-dataset merge summary for the report: per-file metadata
+// (from `meta`, as collected by the CLI), the cell-agreement check, and the
+// fitted relative scales + inter-dataset agreement from scaleDatasets().
+function buildDatasetSummary(meta, scaling, cell, count, flags = {}) {
+    const cells = [];
+    for (let i = 0; i < count; i++) {
+        const m = (meta && meta[i]) || {};
+        cells.push(m.cell || null);
+    }
+    const cellCheck = compareDatasetCells(cell, cells);
+    const items = [];
+    for (let i = 0; i < count; i++) {
+        const m = (meta && meta[i]) || {};
+        const s = scaling && scaling.ok && scaling.datasets[i] ? scaling.datasets[i] : null;
+        items.push({
+            index: i,
+            name: m.name || `dataset ${i + 1}`,
+            format: m.format || null,
+            nObs: m.nObs != null ? m.nObs : (s ? s.nObs : null),
+            cell: cells[i],
+            cellDev: cellCheck.rows[i],
+            dmin: s ? s.dmin : null,
+            dmax: s ? s.dmax : null,
+            K: s ? s.K : null,
+            B: s ? s.B : null,
+            nFit: s ? s.nFit : null,
+            nCommon: s ? s.nCommon : null,
+            rBefore: s ? s.rBefore : null,
+            rAfter: s ? s.rAfter : null,
+        });
+    }
+    let scalingState;
+    if (flags.absActive) scalingState = 'handled by the absorption correction (--abs)';
+    else if (flags.dscaleDisabled) scalingState = 'disabled (--no-dscale); intensities merged as read';
+    else if (scaling && scaling.ok) {
+        scalingState = `applied (K + B per dataset, ${scaling.cyclesRun} cycle(s)` +
+            `${scaling.converged ? ', converged' : ', NOT converged'}${scaling.withB ? '' : ', K only'})`;
+    } else if (scaling && !scaling.ok) scalingState = `failed: ${scaling.reason}`;
+    else scalingState = 'not computed';
+    return {
+        count,
+        items,
+        cellCheck,
+        scaling: scalingState,
+        scalingResult: scaling && scaling.ok
+            ? { converged: scaling.converged, cyclesRun: scaling.cyclesRun, withB: scaling.withB }
+            : null,
+    };
+}
+
 // Core space-group analysis over a normalized parsed-HKL object
 // ({ format, title, cell, reflections, wavelength, merge, friedelsLaw }).
 // Shared by the text-based (analyzeHkl) and MTZ-based (analyzeMtz) entry points.
@@ -335,6 +427,42 @@ export function analyzeParsed(parsed, options = {}) {
         usedLaueOps = lg.settings[0].ops;
     }
 
+    // Multi-dataset relative scaling (XSCALE-style). When the input consists of
+    // several files (each observation tagged with its .dataset index), put every
+    // dataset onto the common scale of the others with a per-dataset
+    // K*exp(-B/(2 d^2)) correction BEFORE the merge, so scale/decay differences
+    // between scans (different kappa settings, beam attenuation, ...) do not
+    // inflate the merging statistics. Skipped when the multi-scan absorption
+    // correction is active: its per-scan scale offsets + spherical-harmonic
+    // model already cover the relative scales (and their direction dependence);
+    // the dataset statistics (cell agreement, inter-dataset R) are still
+    // computed for the report. ORDERING: after the space-group / Laue
+    // determination (the equivalent-reflection grouping needs the Laue class)
+    // and before the merge, like the absorption correction below.
+    const nDatasets = options.datasets && options.datasets.length
+        ? options.datasets.length
+        : datasetCount(reflections);
+    const absActive = !!(options.abs && options.absScans);
+    let datasetScaling = null;
+    let unmergedRefs = allReflections;
+    if (nDatasets >= 2 && usedLaueOps) {
+        const applyScaling = options.dscale !== false && !absActive;
+        datasetScaling = scaleDatasets(reflections, usedLaueOps, cell, {
+            cycles: applyScaling ? (options.dscaleCycles != null ? options.dscaleCycles : 5) : 0,
+            withB: options.dscaleB !== false,
+            maxRelSigma: options.dscaleMaxRelSigma,
+        });
+        if (datasetScaling.ok && applyScaling && datasetScaling.reflections.length) {
+            reflections = datasetScaling.reflections;
+            // The unmerged output carries the scaled intensities (the original
+            // raw records are stale); rejected observations are appended below
+            // with their negative sigma preserved, as with --abs.
+            unmergedRefs = [];
+            for (const r of reflections) unmergedRefs.push(r);
+            for (const r of allReflections) if (r.rejected) unmergedRefs.push(r);
+        }
+    }
+
     // Multi-scan empirical absorption correction (AIMLESS method, Evans &
     // McCoy, Acta Cryst. D66, 210 (2010)).
     //
@@ -345,7 +473,6 @@ export function analyzeParsed(parsed, options = {}) {
     // set; the data-reduction-rejected observations (negative sigma) are kept
     // only for the unmerged output.
     let absorption = null;
-    let unmergedRefs = allReflections;
     if (options.abs && options.absScans) {
         absorption = runAbsorptionCorrection(options.absScans, cell, usedLaueOps, {
             lmaxEven: options.absLmaxEven,
@@ -440,6 +567,14 @@ export function analyzeParsed(parsed, options = {}) {
         // The absorption correction was computed above (before the merge) and
         // its corrected intensities are already in `reflections`; just attach it.
         if (absorption) merge.absorption = absorption;
+        // Multi-dataset merge summary for the report: per-file metadata, cell
+        // agreement, fitted relative scales and inter-dataset agreement.
+        if (nDatasets >= 2) {
+            merge.datasets = buildDatasetSummary(options.datasets, datasetScaling, cell, nDatasets, {
+                absActive,
+                dscaleDisabled: options.dscale === false,
+            });
+        }
         // Consistency of the (possibly forced) space group with the data.
         const fullSG = usedSG && usedSG.id ? sgData.find(g => g.id === usedSG.id) : null;
         if (fullSG) {
@@ -608,3 +743,6 @@ export { analyzeBeamDamage, kPer100 } from './raddose.js';
 // Multi-scan empirical absorption correction (AIMLESS method,
 // P. R. Evans & A. W. McCoy, Acta Cryst. D66, 210 (2010)).
 export { runAbsorptionCorrection, buildAbsorptionReport, MultiScanAbsorptionCorr } from './abs.js';
+
+// Multi-dataset relative scaling before merging (XSCALE-style K + B).
+export { compareDatasetCells, datasetCount, scaleDatasets } from './dataset-scale.js';

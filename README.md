@@ -44,6 +44,7 @@ SHELXD / SHELXT / SHELXS.
 | 10. PDB validation | `--valid` checks the determined space group against an **offline PDB unit-cell/space-group lookup table** (`data/pdb-cells.json`, built once from RCSB). No network access at validation time: reports **VERIFIED / MISMATCH / AMBIGUOUS (enantiomorph) / INDETERMINATE**, with the space groups PDB assigns to matching cells |
 | 11. Beam damage | `--rad` quantifies radiation damage over the course of the scan (RADDOSE-style): each observation's rotation angle (PSI) is the dose coordinate, and the mean intensity recorded *late* in the scan is compared with that recorded *early*, per resolution shell, giving a decay constant and a damage verdict |
 | 12. Absorption correction | `--abs` (AIMLESS method, Evans & McCoy, *Acta Cryst.* D66, 210 (2010)): corrects intensity variations from X-ray absorption across **multiple scans** of the same crystal by fitting a spherical-harmonic absorption surface + per-scan scale offsets from the redundancy of equivalent reflections, plus a per-scan SD σ correction |
+| 13. Multi-dataset merging | Several `--hklin` files (**HKL and/or MTZ**, mixed freely) are merged into one dataset XSCALE-style: unit cells are cross-checked, each dataset is put on the common scale with a fitted **K·exp(−B/2d²)** relative-scale correction, and the report shows the per-dataset scale, B factor and inter-dataset agreement R before/after scaling |
 
 ---
 
@@ -79,7 +80,7 @@ node src/xrdspace.js hklin data.hkl hklout merged.hkl spacegroup "P 21/c"
 
 | Option | Description |
 |---|---|
-| `--hklin <file> [<file> ...]` | Input HKL file(s) (XDS_ASCII, SHELX five-column, COD `.hkl`, or Bruker P4P). Give all scans of the same crystal as one list, e.g. `--hklin scan1.hkl scan2.hkl scan3.hkl` (or repeat `--hklin`). The first is used for space-group determination, all are combined for the analysis, and with `--abs` each file is a scan |
+| `--hklin <file> [<file> ...]` | Input reflection file(s): XDS_ASCII, SHELX five-column, COD `.hkl`, Bruker P4P, or **MTZ** (binary MTZ is auto-detected, so HKL and MTZ inputs can be mixed). Give all scans / datasets of the same crystal as one list, e.g. `--hklin scan1.hkl scan2.hkl scan3.mtz` (or repeat `--hklin`). The first is used for space-group determination, all are combined for the analysis (with per-dataset relative scaling — see *Multi-dataset merging* below), and with `--abs` each file is a scan |
 | `--hklout <file>` | Output **unmerged** HKL file in **SHELX format** (default: `<input>_shelx.hkl`). SHELX (HKLF 4) does its own merging, so the raw observations are written |
 | `--xdsout <file>` | Output merged HKL file in **XDS_ASCII format** (default: `<input>_xds.hkl`) |
 | `--unmergedout <file>` | Output **unmerged** HKL file in **XDS_ASCII format** (`MERGE=FALSE`), keeping every observation (default: `<input>_unmerged.hkl`) |
@@ -115,6 +116,10 @@ node src/xrdspace.js hklin data.hkl hklout merged.hkl spacegroup "P 21/c"
 | `--abs-robust <lncosh\|huber\|none>` | Robust loss for the fit (default `lncosh`) |
 | `--abs-no-sd` | Skip the per-scan SD σ correction |
 | `--abs-min-scans <n>` | Minimum distinct scans per equivalent set (default `2` when ≥ 2 scans, else `1`) |
+| `--no-dscale` | Merge multiple input files **without** the relative K/B dataset scaling (intensities are combined exactly as read). By default, when two or more `--hklin` files are given, each dataset is scaled onto the common scale of the others — see *Multi-dataset merging* below. (With `--abs` the K/B scaling is skipped automatically: the absorption correction models the relative scales itself) |
+| `--dscale-cycles <n>` | Refinement cycles for the multi-dataset relative scaling (default `5`) |
+| `--intensity <label>` | MTZ intensity column to read (default: first found of `IMEAN`, `F`, `FP`, `FMEAN`, `I`, `IOBS`, …) |
+| `--sigma <label>` | MTZ sigma column to read (default: first found of `SIGIMEAN`, `SIGF`, `SIGI`, …) |
 | `--help`, `-h` | Show help |
 | `--version`, `-v` | Show version |
 
@@ -412,6 +417,58 @@ which is not stored in an HKL file, so k is reported in units of rotation angle
 with that assumption stated. For a robust small-molecule crystal the decay is
 small (as above); the per-shell values and the fit R² let you judge how much of
 the trend is real damage versus noise.
+
+### Multi-dataset merging (multiple HKL/MTZ files)
+
+When a crystal is measured in several scans — different kappa/φ settings of the
+same crystal, several wedges, or even several crystals of the same compound —
+each input file carries its own arbitrary scale and a slightly different
+overall temperature factor (beam attenuation, absorption, decay). Passing all
+of them to `--hklin` merges them into one dataset, XSCALE-style:
+
+```sh
+# Two kappa settings of one crystal, second scan fed as MTZ:
+node src/xrdspace.js --hklin XDS_ASCII-1.HKL scan2.mtz --mtzout merged.mtz
+```
+
+- **Any mix of formats** is accepted: XDS_ASCII, SHELX five-column, COD `.hkl`,
+  Bruker P4P and binary **MTZ** (auto-detected by its magic bytes; read
+  `IMEAN/SIGIMEAN`, `I/SIGI`, `F/SIGF`, … columns, overridable with
+  `--intensity` / `--sigma`).
+- The **unit cells are cross-checked** against the first file; deviations
+  beyond ~1 % in length or ~1° in angle are flagged in the report (*CHECK
+  INDEXING*) so an accidentally mixed-in foreign crystal does not slip through.
+- Each dataset is put on the **common scale** with a smooth two-parameter
+  correction `I' = I · K · exp(−B/(2d²))`, fitted by weighted least squares
+  against the inverse-variance weighted mean of all datasets (the AIMLESS /
+  XSCALE iteration) on their common well-measured reflections, and iterated to
+  convergence. The anchor is the observation-weighted mean, so the merged scale
+  is preserved. `--no-dscale` merges the files without this correction;
+  `--dscale-cycles` sets the iteration budget.
+- The report gains a **MULTI-DATASET MERGE** section: per-dataset K, B,
+  resolution range and the inter-dataset agreement
+  `R-vs-others = Σ|⟨I⟩_d − ⟨I⟩_others| / Σ⟨I⟩_others` **before → after**
+  scaling, plus the cell-agreement verdict. All merged statistics and every
+  output file (SHELX HKL, merged/unmerged XDS_ASCII, MTZ) carry the scaled
+  intensities.
+- With `--abs` the multi-scan absorption correction models the relative scales
+  itself (per-scan offsets + spherical harmonics, which also capture the
+  *direction*-dependent absorption of differently oriented scans), so the K/B
+  scaling steps aside and only the dataset statistics are reported.
+
+Example (two 180° kappa scans of one crystal, P1̄, 0.66 Å):
+
+```
+  MULTI-DATASET MERGE (2 DATASETS)
+------------------------------------------------------------------------------
+  Datasets            : 2
+  Relative scaling    : applied (K + B per dataset, 4 cycle(s), converged)
+  Cell agreement      : max deviation 0.10% lengths, 0.23 deg angles — compatible
+
+    #  file                          format       #obs   d-range(A)       K    B(A^2)   R-vs-others
+    1  XDS_ASCII-1.HKL               xds_ascii    53546     29.08-0.66   0.9905   -0.104   5.40% -> 5.16%
+    2  XDS_ASCII-2.HKL               xds_ascii    53658     14.76-0.66   1.0096    0.104   5.49% -> 5.01%
+```
 
 ### Multi-scan absorption correction (`--abs`, AIMLESS method)
 
@@ -725,6 +782,11 @@ Runs the full analysis on HKL file **text** and returns a result object.
 | `radEarlyFrac` | `number` | Fraction of the rotation counted as "early" (default `0.25`) |
 | `radLateFrac` | `number` | Fraction of the rotation counted as "late" (default `0.25`) |
 | `radShells` | `number` | Number of resolution shells for the damage table (default `10`) |
+| `datasets` | `array` | Per-input-file metadata `[{name, format, cell, nObs, wavelength}]` for multi-dataset merging; reflections must carry a matching `.dataset` index tag. Enables the MULTI-DATASET summary (`merge.datasets`) when ≥ 2 entries |
+| `dscale` | `boolean` | Relative K/B scaling of the datasets before the merge (default `true` when ≥ 2 datasets and `abs` is off; `false` = statistics only, intensities merged as read) |
+| `dscaleCycles` | `number` | Scaling refinement cycles (default `5`) |
+| `dscaleB` | `boolean` | Refine a B factor per dataset along with K (default `true`; `false` = K only) |
+| `dscaleMaxRelSigma` | `number` | Relative-σ cutoff for reflections entering the scale fit (default `0.25`) |
 | `abs` | `boolean` | Also run the multi-scan absorption correction (`--abs`); requires `absScans` |
 | `absScans` | `Map\|array\|object` | Per-scan reflection sets: `Map<scanIndex, reflections[]>`, `reflections[][]` (index = scan), or `{[idx]: reflections[]}`. The first entry is scan 0 |
 | `absLmaxEven` / `absLmaxOdd` | `number` | Spherical-harmonic orders (defaults `6` / `5`, the AIMLESS set → 49 terms) |
@@ -783,6 +845,10 @@ Runs the full analysis on HKL file **text** and returns a result object.
                            //   nEquivalentSets?, overallScale?, absorptionCoeffs?,
                            //   runOffsets?, sdParams?, stats?, report,
                            //   correctedReflections? } — AIMLESS multi-scan correction
+    datasets,            // (multi-file input) { count, scaling, cellCheck:{rows,warnings,ok},
+                           //   items:[{ index, name, format, nObs, cell, cellDev,
+                           //            dmin, dmax, K, B, nFit, nCommon, rBefore, rAfter }] }
+                           //   — MULTI-DATASET MERGE summary (relative scales + agreement)
   }
 }
 ```
@@ -847,6 +913,10 @@ const result = analyzeMtz(fs.readFileSync('data.mtz'));
 | `opsFromLattSymm(latt, symm)` | Full general-position operator set (closed) from `LATT` + `SYMM` lines |
 | `readMtz(buffer, options)` | Parse a CCP4 MTZ file into a structured object (no analysis): `{title, cell, spaceGroupNumber, spaceGroupName, columns, data, byteOrder, ...}` |
 | `writeMtzFile(mtz)` | Re-serialize a parsed MTZ object to file bytes (little-endian) |
+| `parseReflectionFile(buffer, options)` | Read a reflection file of **any** supported format from bytes or text: binary MTZ is auto-detected by its `MTZ ` magic, everything else is parsed as text (XDS_ASCII, SHELX, COD, P4P). Returns the normalized parsed-HKL object that `analyzeParsed` consumes. For MTZ, `options.intensity` / `options.sigma` select the columns |
+| `scaleDatasets(reflections, laueOps, cell, opts)` | XSCALE-style **relative scaling of multiple datasets**: observations tagged with `.dataset`, `opts = {cycles, withB, maxRelSigma}`. Fits `I' = I·K·exp(−B/(2d²))` per dataset against the inverse-variance weighted common mean. Returns `{ok, converged, cyclesRun, datasets:[{index, nObs, nCommon, nFit, K, B, rBefore, rAfter, dmin, dmax}], reflections}` (corrected copies; the input is not modified) |
+| `compareDatasetCells(refCell, cells, opts)` | Cross-check per-dataset unit cells against a reference: `{rows:[{maxLenPct, maxAngDeg, bad}], warnings, ok}` (`opts.tolLen` default 1 %, `opts.tolAng` default 1°) |
+| `datasetCount(reflections)` | Number of distinct `.dataset` tags in a reflection list |
 
 ---
 
@@ -858,7 +928,7 @@ const result = analyzeMtz(fs.readFileSync('data.mtz'));
 | **SHELX five-column** | 5+ numeric columns `H K L I SIG(I)` | No cell in the file — provide `--cell` |
 | **COD `.hkl`** | CIF `loop_` with `_refln_` keys | Reads `F²_meas` (+σ), `I_meas` (+σ), `F_meas` (+σ) or `f_obs` (+σ); cell must be supplied |
 | **Bruker P4P** | `FILEID` header line | Cell from the `CELL` line, wavelength from `SOURCE`, title from `TITLE`. Reflections from `REF05` records (`h k l ω 2θ ψ χ … I σ u1 u2 u3`); the intensity `I` and its σ are the two fields immediately before the reciprocal-lattice `u1 u2 u3` components, and the rotation angle ω becomes the per-observation PSI. Direct-beam `(0 0 0)` rows are ignored. Handles the SAINT/APEX quirk of fusing a negative ω onto `l` (e.g. `13-108.000`) |
-| **CCP4 MTZ** | `MTZ ` binary magic (library only) | Cell, space group and wavelength from the MTZ header; intensity/sigma columns auto-detected (`IMEAN`/`F`/…, `SIGIMEAN`/`SIGF`/…). Use `analyzeMtz()` — the CLI reads text HKL files |
+| **CCP4 MTZ** | `MTZ ` binary magic | Cell, space group and wavelength from the MTZ header; intensity/sigma columns auto-detected (`IMEAN`/`F`/…, `SIGIMEAN`/`SIGF`/…, overridable with `--intensity` / `--sigma`). Accepted by the CLI as any other `--hklin` file (mixed HKL/MTZ input works), and in the library via `analyzeMtz()` or `parseReflectionFile()` |
 
 ---
 
@@ -1090,6 +1160,7 @@ npm test            # full 10 000-entry COD validation (the main benchmark)
 npm run test:mtz    # MTZ reader/writer round-trip + analyzeMtz end-to-end
 npm run test:rad    # RADDOSE-style beam-damage (--rad) tests
 npm run test:abs    # multi-scan absorption correction (--abs) tests
+npm run test:dscale # multi-dataset merging (MTZ input, relative K/B scaling) tests
 npm run test:p4p    # Bruker P4P reader (REF05 columns, l/omega fusion, (0,0,0) rows)
 npm run test:ins    # SHELX .ins (LATT / SYMM) regression tests
 npm run test:cell   # offline Niggli reduction / cell-similarity tests
@@ -1101,9 +1172,10 @@ npm run test:xprep  # head-to-head vs Bruker XPREP (needs the XPREP binary)
 The 10 000-entry pass (`npm test`) downloads the reflection files from the COD
 (cached in `HKLs/cod/`) and is **resumable** — it skips entries already in its
 JSONL log, so an interrupted run can simply be re-invoked. `test:cell`,
-`test:pdb`, `test:ins`, `test:mtz` and `test:rad` are fully offline; the
-`test:xprep` and `test:mx` harnesses need external inputs (the XPREP binary /
-a local MX data dir, respectively).
+`test:pdb`, `test:ins`, `test:mtz`, `test:rad` and `test:dscale` are fully
+offline (`test:dscale` also runs an end-to-end CLI merge when the reference
+two-kappa dataset is present); the `test:xprep` and `test:mx` harnesses need
+external inputs (the XPREP binary / a local MX data dir, respectively).
 
 - **MTZ** (`tests/xrdspace-mtz.js`) — builds a synthetic MTZ in memory, writes
   it with `writeMtz`, re-parses it and checks every field and data value
@@ -1152,6 +1224,8 @@ xrdspace/
 │   ├── abs.js             # multi-scan absorption correction (--abs, AIMLESS method):
 │   │                      #   spherical-harmonic absorption surface + per-scan scale
 │   │                      #   offsets + per-scan SD sigma correction
+│   ├── dataset-scale.js   # multi-dataset merging: cell cross-check + relative
+│   │                      #   K*exp(-B/2d^2) dataset scaling (XSCALE-style)
 │   ├── mtz.js             # CCP4 MTZ reader/writer (parseMtz / writeMtz, ...)
 │   ├── sg-model.js        # transform a SHELX model between space groups
 │   └── space-groups.js    # dictionary of all 230 space groups (all settings)
@@ -1178,6 +1252,9 @@ xrdspace/
 │   ├── xrdspace-abs.js         # multi-scan absorption tests (--abs): SH-basis
 │   │                           #   orthonormality + synthetic 3-scan known-gradient
 │   │                           #   correction + error paths + class API
+│   ├── xrdspace-dscale.js      # multi-dataset merge tests: cell check, synthetic
+│   │                           #   known-K/B scale recovery, MTZ auto-detection,
+│   │                           #   analyzeParsed integration + CLI end-to-end
 │   ├── xrdspace-report-10k.svg  # PASS/NEAR/FAIL chart (10 000-entry set)
 │   └── xrdspace-report-10k.png  # PNG render of the 10 000-entry chart
 ├── data/                  # generated PDB lookup table (git-ignored, ~40 MB)

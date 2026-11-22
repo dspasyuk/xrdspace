@@ -1,6 +1,6 @@
 {
   "name": "xrdspace",
-  "version": "1.1.0",
+  "version": "1.2.0",
   "type": "module",
   "description": "XPREP-style space-group determination and reflection merging for X-ray diffraction HKL data (JavaScript)",
   "main": "src/index.js",
@@ -18,6 +18,7 @@
     "test:rad": "node tests/xrdspace-rad.js",
     "test:abs": "node tests/xrdspace-abs.js",
     "test:p4p": "node tests/xrdspace-p4p.js",
+    "test:dscale": "node tests/xrdspace-dscale.js",
     "build:pdb": "node scripts/build-pdb-table.js",
     "demo": "node scripts/serve-demo.js"
   },
